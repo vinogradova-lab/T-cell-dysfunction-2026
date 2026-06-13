@@ -1,0 +1,562 @@
+# RNA data visualization
+
+## Setup
+
+```{r, setup}
+# set working directory to script location
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# load figure settings
+source("../../bin/figure_utils.R")
+
+# input directory
+input_dir <- '../../data/rna/'
+norm_counts <- paste0(input_dir, "counts/normalized_counts.txt")
+
+wp_replicate_fn <- "../../data/whole_proteome/combined_files/07_combfiles_percctrl_passes_two_replicate_variability_filter.csv"
+
+condition_from_rna_sample_name <- function(sample_name){
+  # helper method for pulling condition from sample name
+  return(case_when(grepl("D2",sample_name) ~ "D2",
+          grepl("D4.Ac",sample_name) ~ "D4A",
+          grepl("D8.Ac",sample_name) ~ "D8A",
+          grepl("D4.Chr",sample_name) ~ "D4C",
+          grepl("D8.Chr",sample_name) ~ "D8C",
+          )
+  )
+}
+
+
+```
+
+## Read and scale normalized counts
+
+```{r}
+
+# read deseq2 normalized counts
+
+df <- read_delim(
+  file = norm_counts,
+  delim = "\t",
+  col_names = c("geneSymbol", str_split(readLines(norm_counts, n = 1), "\t")[[1]]),
+  skip = 1,
+  show_col_types = FALSE
+) %>%
+  mutate(geneSymbol = make.unique(geneSymbol)) %>%
+  column_to_rownames("geneSymbol")
+
+# order columns according to condition order
+
+column_rank <- colnames(df) %>%
+  lapply(FUN = condition_from_rna_sample_name) %>%
+  unlist() %>%
+  factor(levels = names(cols)) %>%
+  rank(ties.method = "first")
+
+column_order <- c()
+for (i in seq_along(column_rank)) {
+  column_order[column_rank[i]] <- i
+}
+
+df[column_order] -> df
+
+# calculate z-score
+
+df %>% apply(1, scale) %>% t() %>% as.data.frame()  %>% as.matrix() -> scaled_data
+colnames(scaled_data) <- colnames(df)
+```
+
+
+
+
+
+## z-score heatmaps
+
+```{r}
+get_ht <-
+  function(scaled_data,
+           title = " exhaustion markers",
+           cluster_rows = FALSE,
+           row_k_means = 0,
+           row_annotation = NULL,
+           show_row_names = TRUE) {
+    n_markers <- nrow(scaled_data)
+    # do not include infinite values that can't be clustered
+    scaled_data <- scaled_data[!rowSums(!is.finite(scaled_data)),]
+    channel_conditions <- scaled_data %>%
+      colnames() %>% lapply(FUN = condition_from_rna_sample_name) %>%
+      unlist()
+    colnames(scaled_data) <- channel_conditions
+    ba <- HeatmapAnnotation(
+      conditions = channel_conditions,
+      col = list(conditions = EXHAUSTION_COLS),
+      show_annotation_name = FALSE,
+      show_legend = FALSE
+    )
+    scaled_data %>%
+      Heatmap(
+        name = "zscore",
+        cluster_rows = cluster_rows,
+        bottom_annotation = ba,
+        cluster_columns = FALSE,
+        show_row_names = show_row_names,
+        show_column_names = FALSE,
+        rect_gp = gpar(col = "white", lwd = 0.1),
+        show_column_dend = FALSE,
+        show_row_dend = FALSE,
+        row_km = row_k_means,
+        right_annotation = row_annotation,
+        column_title_gp = gpar(fontsize = 6, fontfamily = "Arial"),
+        row_names_gp = gpar(fontsize = 5, fontfamily = "Arial"),
+        column_title = "Bulk RNA-Seq",
+        heatmap_legend_param = list(
+          legend_height = unit(1, "cm"),
+          grid_width = unit(0.2, "cm"),
+          title_gp = gpar(fontsize = 6, fontfamily = "Arial"),
+          labels_gp = gpar(fontsize = 6, fontfamily = "Arial")
+        )
+      ) -> ht
+    return(ht)
+  }
+```
+
+
+### Selected exhaustion markers
+
+```{r, fig.width=2, fig.height=1.9}
+ht_data <- scaled_data[c("BATF","CTLA4","CXCL13","EGR2","ENTPD1","GZMB","HAVCR2","HIF1A","IL7R","IRF4","LAG3","NFATC1","NR4A1","SATB1","TBX21","TCF7","TNFRSF9"),]
+ht <- get_ht(ht_data, cluster_rows = TRUE)
+
+dir.create(paste0(input_dir, "heatmaps/exhaustion markers"))
+pdf(
+  file=paste0(input_dir, "heatmaps/exhaustion markers/fig_1d_exhaustion_markers.pdf"),width=2,height=1.9)
+print(ht)
+dev.off()
+print(ht)
+```
+
+
+
+### ISR
+
+
+```{r, fig.height=5, fig.width=2}
+isr_genes <- '../../data/rna/Chandel_2023_ISR_genes_mapped.csv' %>% 
+  read_csv(show_col_types = FALSE) %>% 
+  pull("Manually curated Human gene name") %>% 
+  unlist() %>% unique()
+ht_data <- scaled_data[(isr_genes[isr_genes %in% rownames(scaled_data)]),]
+ht_data <- ht_data[!rowSums(!is.finite(ht_data)),]
+ht_row_order <- get_ht(ht_data, cluster_rows = TRUE) %>% row_order()
+
+# create a condensed version of the heatmap that shows every other name
+
+selected_rows <- seq(1, nrow(ht_data), by = 2)
+original_list <- rownames(ht_data[ht_row_order,])[selected_rows]
+result <- ifelse(rownames(ht_data) %in% original_list, rownames(ht_data), "")
+row_annotation <- rowAnnotation(
+  text = anno_text(result, gp = gpar(fontsize = 5, fontfamily = "Arial"))
+)
+
+ht<- get_ht(
+  ht_data, cluster_rows = TRUE,
+  row_k_means = 0, row_annotation = row_annotation, show_row_names = FALSE
+)
+
+pdf(paste0(input_dir, "heatmaps/exhaustion markers/isr_genes.pdf"),width=2.2,height=5.4)
+print(ht)
+dev.off()
+print(ht)
+```
+
+
+
+
+## PIP5K1B bargraph
+
+```{r, fig.height=2, fig.width=4.5}
+# the ggbreak library isn't compatible with facet wrapping
+# so we have to make the multi-plot panel in an awkward way
+
+rna_expression_plot <- function(gn, y_label) {
+  '/Users/henrysanford/Dropbox @RU Dropbox/Vinogradova Laboratory/Exhaustion manuscript/01_RNA-sequencing/13524/unnormalized_counts.txt' %>% read_delim() %>% 
+    select(-c("Chr","Start","End","Strand","Length")) %>%
+    as.data.frame() %>%
+    mutate(gene = Geneid) %>%
+    mutate(
+      median_d2 = (`sorted_bam_files/Sample_D2-1_IGO_13524_1_sorted.bam` + 
+                     `sorted_bam_files/Sample_D2-2_IGO_13524_2_sorted.bam` + 
+                     `sorted_bam_files/Sample_D2-3_IGO_13524_3_sorted.bam`)/3) -> df
+  
+  pivot_cols <- colnames(df)[grepl("Sample", colnames(df))]
+  df %>% pivot_longer(cols = pivot_cols, names_to = "sample_name", values_to = "normalized_counts" ) %>%
+    mutate(percent_control = (normalized_counts / median_d2) * 100) %>%
+    mutate(condition = case_when(grepl("D2",sample_name) ~ "D2",
+              grepl("D4.Ac",sample_name) ~ "D4A",
+              grepl("D8.Ac",sample_name) ~ "D8A",
+              grepl("D4.Chr",sample_name) ~ "D4C",
+              grepl("D8.Chr",sample_name) ~ "D8C"
+              )) %>%
+    filter(
+      gene == gn,
+      condition != "D2") -> df
+  
+    df %>%
+      group_by(condition, gene) %>%
+      summarise( 
+        n=n(),
+        mean=mean(percent_control),
+        sd=sd(percent_control),
+        fun = mean
+      ) %>%
+      mutate(se=sd/sqrt(n))  %>%
+      mutate(ic=se * qt((1-0.05)/2 + .5, n-1)) -> stat_df
+    
+  df$condition <- factor(df$condition, levels = names(cols))
+    
+  df %>%
+    ggplot(aes(x = condition, y = percent_control, fill = condition)) + 
+    geom_bar(stat = "summary", 
+             fun = "mean",
+             show.legend = FALSE,
+             width = 0.75,
+             alpha = 0.7) +
+      geom_jitter(shape = 21, 
+                width = 0.1,
+                height = 0,
+                color = "black",
+                size = POINT_SIZE - 1,
+                stroke = POINT_STROKE,
+                show.legend = FALSE) + 
+      geom_errorbar(data = stat_df, 
+                  mapping = aes(
+                    x = condition, 
+                    ymin = mean - se,
+                    ymax = mean + se
+                  ),
+                  inherit.aes = FALSE,
+                  width = 0.4,
+                  size = LINE_WIDTH) +
+      facet_wrap(~gene, scales = "free") +
+      ggbreak::scale_y_break(breaks = c(200, 550), 
+                           scales = 1,
+                           expand = expansion(mult = c(0, .2))) +
+      my_theme() + 
+      geom_hline(yintercept = 100, 
+                 size = LINE_WIDTH, 
+                 linetype="dashed"
+                 ) + 
+    scale_y_continuous(
+      expand = expansion(mult = c(0, .3))
+    )  + 
+    theme(
+      strip.background = element_blank(),
+      panel.spacing = unit(2,"mm"),
+      strip.text = element_text(size = 8),
+      # reverse annoying ggbreak changes
+      axis.line.y.right = element_blank(),
+      axis.ticks.y.right = element_blank(),
+      axis.text.y.right = element_blank(),
+      axis.title.x = element_text(margin = margin(t = 0), color = "black", family = FONT_FAMILY, size = FONT_SIZE, hjust = 0.5),
+      axis.title.y = element_text(margin = margin(r = 0), color = "black", family = FONT_FAMILY, size = FONT_SIZE, vjust = 0.5),
+      panel.border =element_blank(),
+      axis.line.x = AXIS_LINE,
+      axis.line.y = AXIS_LINE
+    ) + 
+    scale_fill_manual(values = cols) +
+    ylim(0,8000) +
+    labs(x = "", y = y_label) -> plt
+  print(plt)
+  
+  return(plt)
+}
+
+a = rna_expression_plot("PIP5K1A", "RNA expression (%D2)")
+b = rna_expression_plot("PIP5K1B", "")
+c = rna_expression_plot("PIP5K1C", "")
+
+ggpubr::ggarrange(
+   print(a), print(b), print(c),
+   nrow = 1, align = "h"
+)
+save_plot('/Users/henrysanford/Dropbox @RU Dropbox/Vinogradova Laboratory/Exhaustion manuscript/01_RNA-sequencing/13524/barplots/pip5k_family', width = 4.5, height = 2)
+```
+
+
+## GSEA
+
+### setup
+
+```{r}
+source("../../bin/figure_parameters.R")
+rna_dir <- "../../data/rna/"
+```
+
+
+### plotting
+
+```{r}
+
+collect_metadata <- function(gsea_results_dir, conditions){
+  l <- list.dirs(gsea_results_dir, recursive = FALSE)
+  metadata <- list()
+  # Collect filepaths by searching folder names. 
+  # Each GSEA results folder should start with the condition
+  for (condition in conditions){
+    metadata[condition] <- l[grepl(condition, l)][1]
+  } 
+  return(metadata)
+}
+
+get_edb_obj <- function(path, gene.set, class.name, metric.range,
+                       enrichment.score.range){
+  ## Load .rnk data
+  path.rnk <- list.files(path = file.path(path, "edb"),
+                         pattern = ".rnk$", full.names = TRUE)
+  gsea.rnk <- read.delim(file = path.rnk, header = FALSE)
+  colnames(gsea.rnk) <- c("hgnc.symbol", "metric")
+  if (missing(metric.range)) {
+    metric.range <- c(min(gsea.rnk$metric), max(gsea.rnk$metric))
+  }  
+  
+  ## Load .edb data
+  path.edb <- list.files(path = file.path(path, "edb"),
+                         pattern = ".edb$", full.names = TRUE)
+  gsea.edb <- read.delim(file = path.edb,
+                         header = FALSE, stringsAsFactors = FALSE)
+  gsea.edb <- unlist(gsea.edb)
+  gsea.metric <- gsea.edb[grep("METRIC=", gsea.edb)]
+  gsea.metric <- unlist(strsplit(gsea.metric, " "))
+  gsea.metric <- gsea.metric[grep("METRIC=", gsea.metric)]
+  gsea.metric <- gsub("METRIC=", "", gsea.metric)
+  gsea.edb <- gsea.edb[grep("<DTG", gsea.edb)]
+  
+  # Select the right gene set
+  if (length(gsea.edb) == 0) {
+    stop(paste("The gene set name was not found, please provide",
+               "a correct name"))
+  }
+  if (length(grep(paste0(gsub(".\\$(.*$)", "\\1", gene.set), " "), gsea.edb)) > 1) {
+    warning(paste("More than 1 gene set matched the gene.set",
+                  "argument; the first match is plotted"))
+  }
+  gsea.edb <- gsea.edb[grep(paste0(gsub(".\\$(.*$)", "\\1", gene.set), " "), gsea.edb)[1]]
+  
+  # Get template name
+  gsea.edb <- gsub(".*TEMPLATE=(.*)", "\\1", gsea.edb)
+  gsea.edb <- unlist(strsplit(gsea.edb, " "))
+  gsea.template <- gsea.edb[1]
+  
+  # Get gene set name
+  gsea.gene.set <- gsea.edb[2]
+  gsea.gene.set <- gsub("GENESET=gene_sets.gmt#", "", gsea.gene.set)
+  
+  # Get enrichment score
+  gsea.enrichment.score <- gsea.edb[3]
+  gsea.enrichment.score <- gsub("ES=", "", gsea.enrichment.score)
+  
+  # Get gene set name
+  gsea.normalized.enrichment.score <- gsea.edb[4]
+  gsea.normalized.enrichment.score <- gsub("NES=", "",
+                                           gsea.normalized.enrichment.score)
+  
+  # Get nominal p-value
+  gsea.p.value <- gsea.edb[5]
+  gsea.p.value <- gsub("NP=", "", gsea.p.value)
+  gsea.p.value <- as.numeric(gsea.p.value)
+  
+  # Get FDR
+  gsea.fdr <- gsea.edb[6]
+  gsea.fdr <- gsub("FDR=", "", gsea.fdr)
+  gsea.fdr <- as.numeric(gsea.fdr)
+  
+  # Get hit indices
+  gsea.edb <- gsea.edb[grep("HIT_INDICES=", gsea.edb):length(gsea.edb)]
+  gsea.hit.indices <- gsea.edb[seq_len(grep("ES_PROFILE=", gsea.edb) - 1)]
+  gsea.hit.indices <- gsub("HIT_INDICES=", "", gsea.hit.indices)
+  gsea.hit.indices <- as.integer(gsea.hit.indices)
+  
+  # Get ES profile
+  gsea.edb <- gsea.edb[grep("ES_PROFILE=", gsea.edb):length(gsea.edb)]
+  gsea.es.profile <- gsea.edb[seq_len(grep("RANK_AT_ES=", gsea.edb) - 1)]
+  gsea.es.profile <- gsub("ES_PROFILE=", "", gsea.es.profile)
+  gsea.es.profile <- as.numeric(gsea.es.profile)
+  edb <- list("hit_indices" = gsea.hit.indices,"es_profile" = gsea.es.profile) %>% as.data.frame()
+  edb$nes <- gsea.normalized.enrichment.score
+  edb$p_value <- gsea.p.value
+  return(edb)
+}
+
+get_nes <- function(df, c){
+  nes <- df %>% filter(condition == c) %>% pull("nes")
+  return(nes[1])
+}
+
+get_p_val <- function(df, c){
+  pval <- df %>% filter(condition == c) %>% pull("p_value")
+  pval <- as.numeric(pval[1])
+  if (pval < 0.001){
+    return("<0.001")
+  } else{
+    return (
+      paste0("=", as.character(round(pval, digits = 3)))
+    )
+  }
+}
+
+
+plot_gsea <- function(
+  gsea_results_dir,
+  conditions,
+  gene_list_name){
+  metadata <- collect_metadata(gsea_results_dir, conditions) 
+  path.rnk <- list.files(path = file.path(metadata[3], "edb"),
+                       pattern = ".rnk$", full.names = TRUE)
+  gsea.rnk <- read.delim(file = path.rnk, header = FALSE)
+  
+  df <- NULL
+  for (name in names(metadata)){
+    c_edb <- get_edb_obj(
+      path = metadata[name],gene.set=gene_list_name,)
+    c_edb$condition <- name
+    df = rbind(df, c_edb)
+  }
+  # define y position of hit indices for each condition
+df %>% 
+  mutate(condition = factor(df$condition, conditions),
+         y_pos = as.numeric(condition) - 1) -> df
+
+# define plot dimensions
+es_min <- min(df$es_profile) * 1.2
+tick_height = 0.1
+x_max <- nrow(gsea.rnk)
+y_min <- es_min - length(conditions) * tick_height
+y_max <- max(df$es_profile)  * 1.2
+
+ggplot() + 
+  # background lines
+  geom_hline(yintercept = c(0),
+               size = LINE_WIDTH,
+             color="grey") +
+  # curves
+  geom_path(data = df, 
+            mapping = aes(x=hit_indices, 
+                          y = es_profile, 
+                          color=condition),
+            show.legend = FALSE,
+            alpha = 0.7,
+            size = 0.25 * 1.5
+            ) +
+  # hit index tick marks
+  geom_segment(data = df,
+               size = 0.25,
+               mapping = aes(x= hit_indices, 
+                             y = es_min - (tick_height * y_pos), 
+                             yend = es_min - (tick_height * (y_pos + 1)), 
+                             color=condition), 
+               show.legend = FALSE) +
+  # line seperating tick marks
+  geom_hline(data = df,
+             mapping = aes(yintercept = es_min - (tick_height * y_pos)), 
+             size = LINE_WIDTH,
+             color = "black") + 
+  scale_color_manual(values = cols) + 
+  xlim(c(0,x_max)) +
+  scale_x_continuous(expand = c(0,0), breaks = c(0, 5000, 10000, 15000)) + 
+  scale_y_continuous(expand = c(0,0), limits = c(y_min, y_max), breaks = c(0, 0.5, 1)) +
+  my_theme() + 
+  labs(x = "rank in gene list",
+       y = "enrichment score") + 
+  theme(
+    axis.title.y = element_text( hjust = 0.85)
+    )-> plt
+  
+  for (condition in conditions){
+    # calculate y position of text
+    text_height <- es_min - tick_height * (as.numeric(factor(condition, levels = conditions)) - 0.5)
+   plt <- plt +
+     # add normalized enrichment score label
+    annotate(
+      "text", 
+      x = x_max, 
+      y = text_height, 
+      label = paste0(
+        "NES=", sprintf("%.2f", round(as.numeric(get_nes(df, condition)), 3)),
+        ",p",get_p_val(df, condition)),
+      color = cols[condition],
+      size = 6, 
+      hjust = -0.1,
+      size.unit = "pt") 
+   # add condition label enrichment score label
+   plt <- plt +
+       annotate(
+      "text", 
+      x = 0, 
+      y = text_height, 
+      label = condition,
+      color = cols[condition],
+      size = 6, 
+      hjust = 1.05,
+      size.unit = "pt") 
+  }
+  plt + 
+    coord_cartesian(clip = "off") +
+    theme(aspect.ratio = 1.5) + 
+    ggtitle(gene_list_name) -> plt
+  print(plt)
+  save_plot(
+    paste0(
+      gsea_results_dir,
+      "/",
+      gene_list_name
+    ),
+    width = 3,
+    height = 2
+  )
+}
+
+```
+
+
+```{r, fig.width=3, fig.height=2}
+lists_to_plot <- c(
+"ATF3_Q6_BINDING_MOTIF",
+"ATF4_Q2_BINDING_MOTIFS",
+"ATF6_01_BINDING_MOTIF")
+for (gene_list in lists_to_plot){
+  print(gene_list)
+  # RNA results
+ plot_gsea(
+  paste0(rna_dir, 'gsea_enrichment_curve/t_cell_dysfunction'),
+  conditions,
+  gene_list
+  ) 
+  # protein results
+  plot_gsea(
+     '../data/t_cell_dysfunction',
+     conditions,
+     gene_list
+  )
+}
+
+```
+
+
+```{r, fig.width=3, fig.height=2}
+# chronic activation score
+
+gsea_results_dir <- paste0(rna_dir, "Santosh GSEA/")
+gene_list_name <- "CHRONIC_ACTIVATION_SCORE"
+
+plot_gsea(
+  gsea_results_dir,
+  conditions,
+  gene_list_name
+)
+```
+
+
+
+
+
+

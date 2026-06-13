@@ -1,0 +1,1221 @@
+# Whole proteome data visualization
+
+## Setup
+
+```{r, setup}
+# set working directory to script location
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# load figure settings
+source("../../bin/figure_utils.R")
+
+# input/output directories
+data_dir <- "../../data/whole_proteome/"
+rna_dir <- '../../data/rna/'
+plot_dir <- paste0(data_dir, "04_results/")
+```
+
+## PCA plots (Protein and RNA)
+
+```{r, fig.height=4, fig.width=2}
+pca_dir <- paste0(plot_dir, "pca/")
+replot_pca(
+  pca_dir,
+  "PC1",
+  "PC2",
+  260
+)
+```
+
+
+```{r, fig.height =2, fig.width=2}
+replot_pca(
+  paste0(rna_dir, "PCA_5000_genes/"),
+  "PC1",
+  "PC2",
+  260,
+  add_grid = TRUE
+)
+```
+
+### GSEA of PCA loadings
+
+```{r, fig.height=2, fig.width=2.6}
+clean_term <- function(term) {
+  str_split_fixed(term, "_", 2)[2] -> term
+  gsub("\\b([a-z])", "\\U\\1", tolower(term), perl=TRUE) -> term
+  str_replace_all(term, "_", " ") -> term
+  str_wrap(term, 40) -> term
+  return(term)
+}
+for (pc in c("PC1", "PC2")) {
+  paste0(plot_dir,
+         "pca_plots/",
+         pc,
+         "/gseapy.gene_set.prerank.report.csv") %>%
+    read_csv(show_col_types = FALSE) %>%
+    mutate(
+      Term = lapply(Term, FUN = clean_term) %>% unlist(),
+      `-log10(FDR)` = -log10(`FDR q-val`)
+    ) %>%
+    arrange(abs(NES)) -> df
+  
+  max_score  <- max(df$`-log10(FDR)`[is.finite(df$`-log10(FDR)`)], na.rm = TRUE)
+  df$`-log10(FDR)`[is.infinite(df$`-log10(FDR)`)] <- 5.5
+  
+  # color palette
+  df %>%
+    filter(`FDR q-val` < 0.01) %>%
+    tail(15) %>%
+    ggplot(aes(
+      x = NES,
+      y = reorder(Term, NES),
+      fill = `-log10(FDR)`
+    )) +
+    geom_col(color = "black",
+             size = LINE_WIDTH,
+             width = 0.5) +
+    my_theme() +
+    geom_vline(xintercept = 0,
+               color = "black",
+               size = LINE_WIDTH) +
+    labs(x = paste0(pc, " NES"),
+         y = NULL,
+         fill = expression("-log"[10] * "(FDR)")) +
+    theme(
+      axis.text.y = element_text(size = 5, family = FONT_FAMILY),
+      legend.text = element_text(margin = margin(l = 1)),
+      legend.key.height = unit(4, "mm"),
+      legend.key.width = unit(4, "mm"),
+      panel.grid.major = element_line(color = "grey90", size = LINE_WIDTH),
+    ) + 
+    scale_fill_continuous(low = "#B3CDE3", high = "#B10F7C", limits = c(1.5, 5.5)) -> plt
+  print(plt)
+  save_plot(
+    paste0(plot_dir, "pca_plots/", pc, "/top_enriched_sets"),
+    width = 2.6,
+    height = 2
+  )
+}
+```
+
+## Volcano plots
+
+```{r, fig.width=2, fig.height=2.2}
+volcano_dir <- paste0(plot_dir, "volcano_plots/")
+
+other_str <- "Other"
+nudge_x = 1
+nudge_y = 0
+label_bound = 0.7
+label_upper_bound = NA
+
+is_in_group <- function(row, fun_group){
+  if (row["group"] == TRUE) {
+    return(fun_group)
+  } else {
+    return("Other")
+  }
+}
+
+options(needs.promptUser = FALSE)
+
+FC_CUTOFF <- log2(1.5)
+
+
+make_condition_plot <- function(row, condition, volcano_data, control_condition, highlight_proteins = c(), highlight_color = '#440154'){
+  x_var <- paste0("log2_FC_Exhaustion.WP...",control_condition,".vs..", condition,"..6315.Proteins.")
+  y_var <- paste0("X.log10_pval_Exhaustion.WP...",control_condition,".vs..", condition,"..6315.Proteins.")
+  change_var = paste0("Regulation_Exhaustion.WP...",control_condition,".vs..", condition,"..6315.Proteins.")
+  name_var = paste0("protein")
+  group <- row["group"]
+  file_name <- row["file_name"]
+  title <- paste0(control_condition," vs ", condition)
+  
+  cols_binary <- c("Other" = other_color)
+  cols_binary[[group]] <- highlight_color
+  alphas_binary <- c("Other" = 0.5)
+  alphas_binary[[group]] <- 1
+  alphas_binary <- c(0.2,0.9)
+  
+  # Important to label all protein lists with a "uniprot" column 
+  read.csv(file_name) %>% 
+    select(uniprot) %>% 
+    unique() -> 
+    functional_proteins
+  functional_proteins <- 
+    intersect(functional_proteins$uniprot, volcano_data$uniprot)
+  
+  # Label all proteins belonging to our functional category
+  volcano_data %>% 
+    mutate(group = is.element(uniprot, functional_proteins)) -> 
+    volcano_data
+  
+  sig <- volcano_data[ volcano_data[[change_var]] %in% c("Significant Up", "Significant Down") , ]
+  functional_and_sig <- sig[sig[["group"]] == TRUE, ]
+  label_data <- sig[ sig[[name_var]] %in% highlight_proteins , ]
+  
+  # quadrant count labels
+  functional_and_sig[functional_and_sig[[change_var]] == "Significant Up",] %>% nrow() -> func_sig_up
+  functional_and_sig[functional_and_sig[[change_var]] == "Significant Down",] %>% nrow() -> func_sig_down
+  nonfunctional_and_sig <- volcano_data[volcano_data[["group"]] == FALSE, ]
+  nonfunctional_and_sig[nonfunctional_and_sig[[change_var]] == "Significant Up",] %>% nrow() -> nonfunc_sig_up
+  nonfunctional_and_sig[nonfunctional_and_sig[[change_var]] == "Significant Down",] %>% nrow() -> nonfunc_sig_down
+  
+  label_x <- 4.7
+  x <- c(-label_x,label_x)
+  y <- rep(15.5,2)
+  label <- c(func_sig_down, func_sig_up)
+  text_labels <- data.frame(x, y, label)
+  
+  y <- y - 1.5
+  label <- c(nonfunc_sig_down, nonfunc_sig_up)
+  overall_labels <- data.frame(x, y, label)
+  
+  
+  # Plot data
+  volcano_data %>%
+    # label all proteins that are in our functional category and are significant
+    mutate("f_and_sig" = uniprot %in% 
+             functional_and_sig$uniprot) %>%
+    mutate(significant = uniprot %in% sig$uniprot) %>%
+    arrange(f_and_sig) -> volcano_data
+  volcano_data$group <- apply(X=volcano_data, MARGIN = 1, FUN = is_in_group, fun_group=group)
+  volcano_data$group <- factor(volcano_data$group, levels = c("Other", group))
+  volcano_data %>%
+    arrange(group) %>%
+    ggplot(aes_string(x=x_var,
+               y=y_var,
+                fill = "group",
+               alpha = "significant")) +
+    ylim(0,16) +
+    xlim(-5.3,5.3)+
+    scale_alpha_manual(values = alphas_binary, guide="none") +
+    geom_point(data = volcano_data %>% filter(significant == FALSE),
+           size = 1,
+           shape=21,
+           stroke=POINT_STROKE / 2,
+           col="black",
+           fill = 'gray88'
+           ) +
+    geom_point(data = volcano_data %>% filter(group == "Other", significant == TRUE), 
+               size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black") +
+    geom_point(data = volcano_data %>% filter(group != "Other", significant == TRUE),
+      size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", size=LINE_WIDTH) +
+    geom_vline(xintercept = c(-FC_CUTOFF, FC_CUTOFF), linetype = "dashed", size=LINE_WIDTH) +
+    geom_text_repel(
+      data = label_data[label_data[[change_var]] == "Significant Down",],
+      aes_string(x = x_var,
+      y = y_var,
+      # label with gene name instead of uniprot
+      label = name_var),
+      direction    = "both",
+      color = "black",
+      box.padding = 1,
+      nudge_x = -nudge_x,
+      nudge_y = nudge_y,
+      xlim = c(-label_upper_bound, -label_bound),
+      size =FONT_SIZE_MM,
+      #bg.color = "white",
+      max.overlaps = getOption("ggrepel.max.overlaps", default = 30),
+      min.segment.length = 0,
+      segment.size = LINE_WIDTH,
+      inherit.aes = FALSE) +
+    geom_text_repel(
+      data = label_data[label_data[[change_var]] == "Significant Up",],
+      aes_string(x = x_var,
+      y = y_var,
+      # label with gene name instead of uniprot
+      label = name_var),
+      direction    = "both",
+      color = "black",
+      box.padding = 1,
+      nudge_x = nudge_x,
+      nudge_y = nudge_y,
+      xlim = c(label_bound,label_upper_bound),
+      force_pull = 0,
+      max.overlaps = getOption("ggrepel.max.overlaps", default = 30),
+      size = FONT_SIZE_MM,
+      min.segment.length = 0,
+      segment.size = LINE_WIDTH,
+      inherit.aes = FALSE) +
+    theme_test() +
+    labs(
+      x = substitute(paste('protein expression, log'[2], "(", n, '/', m, ")"), list(n = condition, m = control_condition)),
+      y = substitute(paste('-log'[10], '(p-value)'))
+    ) +
+    scale_fill_manual(values=cols_binary, breaks = c(group, "Other")) +
+    my_theme() +
+  theme(strip.text.x = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      legend.title=element_blank(),
+      legend.box.background = element_blank(),
+      legend.position = "top",
+      aspect.ratio=1,
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -5.7),
+      legend.key.spacing.y = unit(-1, "cm"),
+      legend.key.spacing.x = unit(-0.05, "cm")) + 
+  geom_label(inherit.aes=FALSE,
+          data=text_labels,
+          mapping=aes(x=x,y=y,label=label),
+          size=6,
+          size.unit="pt",
+          show.legend = FALSE,
+          color='white', fill=highlight_color) +
+  geom_label(inherit.aes=FALSE,
+      data=overall_labels,
+      mapping=aes(x=x,y=y,label=label),
+      size=6,
+      size.unit="pt",
+      show.legend = FALSE,
+      color='white', fill="lightgrey") -> v_plot
+  print(v_plot)
+  
+  save_plot(paste0(volcano_dir, "functional_groups_highlighted/", group, "/", title), 
+            width=2, 
+            height=4)
+}
+
+make_plot<- function(row, conditions, volcano_data, control_condition){
+  for(condition in conditions){
+    print(row)
+
+    make_condition_plot(row, condition, volcano_data, control_condition)
+  }
+}
+
+volcano_data <- paste0(volcano_dir,"volcano_data.csv") %>% read.csv()
+volcano_data_d8a <- paste0(volcano_dir, "volcano_data_compared_to_d8a.csv") %>% read.csv()
+other_color = "grey88"
+```
+
+### Fig S2F peroxisome volcano plot
+
+```{r, fig.width=4, fig.height=2}
+
+highlight_peroxisome <- c("PXMP4","PXMP2","EHHADH","HACL1","ACAA1","ACBD5","PEX13","PEX14")
+
+row = c(group = "Peroxisomal proteins",
+        file_name = "protein_lists/peroxisomal_genes.csv",
+        column_name = "peroxisome")
+
+for (condition in c("D4A","D4C","D8C","D8A")){
+  make_condition_plot(row, condition, volcano_data, "D2", highlight_proteins = highlight_peroxisome, highlight_color = "#28ae80")
+}
+
+make_condition_plot(row, "D8C", volcano_data_d8a, "D8A", 
+                      highlight_proteins = highlight_peroxisome, 
+                    highlight_color ="#28ae80")
+```
+
+### Multiple categories
+
+```{r, fig.width=2, fig.height=4}
+
+nudge_x = 0.7
+
+cell_cycle <- "protein_lists/cell_cycle_proteins.csv" %>% 
+  read_csv() %>% 
+  pull(uniprot)
+nucleotide_metabolism <- "protein_lists/nucleotide_metabolism_expanded.csv" %>% 
+  read_csv() %>% 
+  pull(uniprot)
+redox <- "protein_lists/redox_related_genes.csv" %>% 
+  read_csv() %>% 
+  pull(uniprot)
+
+group_hierarchy <- function(df){
+  df %>%
+    mutate(group = 
+           case_when(
+             uniprot %in% nucleotide_metabolism ~ "Nucelotide metabolism",
+             uniprot %in% redox ~ "Redox related",
+             uniprot %in% cell_cycle ~ "Cell cycle",
+             TRUE ~ "Other"
+           )) %>% 
+    return()
+}
+
+
+volcano_data %>% 
+  group_hierarchy() -> annot_volcano_data
+
+volcano_data_d8a %>% 
+  mutate(group = 
+           case_when(
+             uniprot %in% nucleotide_metabolism ~ "Nucelotide metabolism",
+             uniprot %in% redox ~ "Redox related",
+             uniprot %in% cell_cycle ~ "Cell cycle",
+             TRUE ~ "Other"
+           )) -> annot_volcano_data_d8a
+
+color_code <- c(
+  "Nucelotide metabolism" = "#bade28",
+  "Redox related" = "#440154",
+  "Cell cycle" = "#21918c",
+  "Other" = 'gray88'
+)
+
+make_condition_plot_multi <- function(row, 
+                                condition, 
+                                volcano_data, 
+                                control_condition, 
+                                highlight_proteins = c(), 
+                                highlight_color = '#440154'){
+  x_var <- paste0("log2_FC_Exhaustion.WP...",control_condition,
+                  ".vs..", condition,"..6315.Proteins.")
+  y_var <- paste0("X.log10_pval_Exhaustion.WP...",control_condition,
+                  ".vs..", condition,"..6315.Proteins.")
+  change_var = paste0("Regulation_Exhaustion.WP...",control_condition,
+                      ".vs..", condition,"..6315.Proteins.")
+  name_var = "protein"
+  group <- row["group"]
+  
+  change_var = paste0("Regulation_Exhaustion.WP...",control_condition,
+                      ".vs..", condition,"..6315.Proteins.")
+  
+  # build label dataframe
+  labels <- list()
+  y = 15.5
+  x <- 4.7
+  for (direction in c("Significant Up", "Significant Down")){
+   for (bio_group in names(color_code)){
+      volcano_data[volcano_data[[change_var]] == direction &
+                           volcano_data[["group"]] == bio_group,] %>% 
+       nrow() -> protein_count
+     r <- c("direction" = direction,
+            "bio_group" = bio_group, 
+            "count" = protein_count, 
+            "x" = x,
+            "y" = y)
+     labels[[paste0(bio_group, direction)]] <- r
+     y <- y - 1.5
+   }
+    y <- 15.5
+    x <- x * -1
+  }
+  
+  do.call("rbind", labels) %>% as.data.frame() -> count_label_df
+  title <- paste0(control_condition," vs ", condition)
+  
+  alphas_binary <- c(0.4,0.9)
+  
+  sig <- volcano_data[ volcano_data[[change_var]] %in% c("Significant Up", "Significant Down") , ]
+  
+  volcano_data %>% mutate(significant = uniprot %in% sig$uniprot) -> volcano_data
+  sig$significant <- TRUE
+  label_data <- sig[ sig[[name_var]] %in% highlight_proteins , ]
+  set.seed(12345)
+  volcano_data %>%
+    arrange(group) %>%
+    ggplot(aes_string(x=x_var,
+               y=y_var,
+                fill = "group",
+               alpha = "significant")) +
+    geom_point(data = volcano_data %>% filter(significant == FALSE),
+               size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black",
+               fill = 'gray88'
+               ) +
+    geom_point(data = volcano_data %>% filter(group == "Other", significant == TRUE), 
+               size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black") +
+    geom_point(data = volcano_data %>% filter(group != "Other", significant == TRUE),
+              size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black") +
+    geom_point(data = label_data,
+              size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", size=LINE_WIDTH) +
+    geom_vline(xintercept = c(-FC_CUTOFF, FC_CUTOFF), linetype = "dashed", size=LINE_WIDTH) +
+    geom_text_repel(
+      data = label_data[label_data[[change_var]] == "Significant Down",],
+      aes_string(x = x_var,
+      y = y_var,
+      color = "group",
+      # label with gene name instead of uniprot
+      label = name_var),
+      direction    = "both",
+      #color = "black",
+      box.padding = 1,
+      nudge_x = -nudge_x,
+      xlim = c(NA, -1),
+      size =FONT_SIZE_MM,
+      #bg.color = "white",
+      min.segment.length = 0,
+      segment.size = LINE_WIDTH,
+      inherit.aes = FALSE,
+      show.legend = FALSE) +
+    geom_text_repel(
+      data = label_data[label_data[[change_var]] == "Significant Up",],
+      aes_string(x = x_var,
+      y = y_var,
+      color = "group",
+      # label with gene name instead of uniprot
+      label = name_var),
+      direction    = "both",
+      #color = "black",
+      box.padding = 1,
+      nudge_x = nudge_x,
+      xlim = c(1,NA),
+      size = FONT_SIZE_MM,
+      #bg.color = "white",
+      min.segment.length = 0,
+      segment.size = LINE_WIDTH,
+      inherit.aes = FALSE,
+      show.legend = FALSE) +
+  geom_label(
+    data = count_label_df,
+    mapping = aes(x = as.numeric(x), 
+                  y = as.numeric(y), 
+                  label = count, 
+                  fill = bio_group),
+    color = "white", 
+    size=6,
+    size.unit="pt",
+    show.legend = FALSE,
+    inherit.aes = FALSE) +
+    theme_test() +
+    labs(
+      x = substitute(paste('protein expression, log'[2], "(", n, '/', m, ")"), list(n = condition, m = control_condition)),
+      y = substitute(paste('-log'[10], '(p-value)'))
+    ) +
+    scale_fill_manual(values=color_code, 
+                       breaks = rev(c("Redox related","Other", "Nucelotide metabolism","Cell cycle"))
+                      ) +
+        scale_color_manual(values=color_code, 
+                       breaks = rev(c("Redox related","Other", "Nucelotide metabolism","Cell cycle"))
+                      ) +
+    scale_alpha_manual(values = alphas_binary, guide="none") +
+    my_theme() +
+  theme(strip.text.x = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      legend.title=element_blank(),
+      legend.box.background = element_blank(),
+      legend.position = "top",
+      legend.justification.top = "top",
+      legend.justification = "center",
+      legend.box.just = "center",
+      aspect.ratio=1,
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -0.8),
+      legend.key.spacing.y = unit(-0.9, "cm"),
+      legend.key.spacing.x = unit(-0.05, "cm")) + 
+    guides(fill = guide_legend(ncol = 2, 
+                               )) +
+    ylim(0,16) +
+    xlim(-5.3,5.3) -> v_plot
+  print(v_plot)
+  
+  save_plot(paste0(volcano_dir, "functional_groups_highlighted/", group, "/", title), width=2, height=4)
+}
+
+row = c(group = "Multiple groups",
+      file_name = "protein_lists/cellular_oxidant_detoxification.csv",
+      column_name = "cellular_oxidant_detoxification")
+
+highlight_redox <- c("GPX1","GPX4","GSR","SOD2","SELENOW", "CDK4","CDK6","CDKN2A","CDC25C","CHEK2","ENTPD1","CD38","AK4","NT5DC2")
+
+for (condition in c("D4A","D4C","D8C","D8A")){
+  make_condition_plot_multi(row, condition, annot_volcano_data, "D2", 
+                      highlight_proteins = highlight_redox, 
+                    highlight_color = "#440154")
+}
+
+make_condition_plot_multi(row, "D8C", annot_volcano_data_d8a, "D8A", 
+                      highlight_proteins = highlight_redox, 
+                    highlight_color = "#440154")
+
+```
+
+### Mito + respiratory complex
+
+```{r, fig.width=2, fig.height=4}
+
+nudge_x = 0.7
+
+complex_i_iv <- "protein_lists/respiratory_complex_i-iv.csv" %>% 
+  read_csv() %>% 
+  pull(uniprot)
+complex_v <- "protein_lists/respiratory_complex_v.csv" %>% 
+  read_csv() %>% 
+  pull(uniprot)
+mito <- "protein_lists/mitochondrial_gene_list_go.csv" %>% 
+  read_csv() %>% 
+  pull(uniprot)
+
+color_code <- c(
+  "Respiratory complex V" = "#bade28",
+  "Respiratory complex I-IV" = "#440154",
+  "Mitochondrial" = "#21918c",
+  "Other" = 'gray88'
+)
+
+
+alpha_scale <- c(
+  "Respiratory complex V" = 0.7,
+  "Respiratory complex I-IV" = 0.7,
+  "Mitochondrial" = 0.4,
+  "Other" = 0.4
+)
+
+group_hierarchy <- function(df){
+  df %>%
+    mutate(group = 
+           case_when(
+             uniprot %in% complex_v ~ "Respiratory complex V",
+             uniprot %in% complex_i_iv ~ "Respiratory complex I-IV",
+             uniprot %in% mito ~ "Mitochondrial",
+             TRUE ~ "Other"
+           )) %>% 
+    mutate(group = factor(group,levels = rev(names(color_code)))) %>%
+    arrange(group) %>%
+    return()
+}
+
+
+volcano_data %>% 
+  group_hierarchy() -> annot_volcano_data
+
+volcano_data_d8a %>% group_hierarchy() -> annot_volcano_data_d8a
+
+
+
+make_condition_plot_multi <- function(row, 
+                                condition, 
+                                volcano_data, 
+                                control_condition, 
+                                highlight_proteins = c(), 
+                                highlight_color = '#440154',
+                                x_limit = 2.33430*1.2,
+                                y_limit = 11.183788*1.001){
+  x_var <- paste0("log2_FC_Exhaustion.WP...",control_condition,
+                  ".vs..", condition,"..6315.Proteins.")
+  y_var <- paste0("X.log10_pval_Exhaustion.WP...",control_condition,
+                  ".vs..", condition,"..6315.Proteins.")
+  change_var = paste0("Regulation_Exhaustion.WP...",control_condition,
+                      ".vs..", condition,"..6315.Proteins.")
+  name_var = "protein"
+  group <- row["group"]
+  
+  change_var = paste0("Regulation_Exhaustion.WP...",control_condition,
+                      ".vs..", condition,"..6315.Proteins.")
+  
+  volcano_data %>% mutate(fc_direction = case_when(!!as.symbol(x_var) > 0 ~ "Positive",
+                          TRUE ~ "Negative")) -> volcano_data
+  print(head(volcano_data))
+  
+  # build label dataframe
+  labels <- list()
+  y = y_limit * (0.96875)
+  x = x_limit * (0.88679245283)
+  for (direction in c("Positive", "Negative")) {
+    for (bio_group in names(color_code)) {
+      if(bio_group == "Other"){
+        next
+      }
+      volcano_data[volcano_data[["fc_direction"]] == direction &
+                     volcano_data[["group"]] == bio_group,] %>%
+        nrow() -> protein_count
+      r <- c(
+        "direction" = direction,
+        "bio_group" = bio_group,
+        "count" = protein_count,
+        "x" = x,
+        "y" = y
+      )
+      labels[[paste0(bio_group, direction)]] <- r
+      y <- y - (y_limit * 0.09375)
+    }
+    y <- y_limit * (0.96875)
+    x <- x * -1
+  }
+  
+  do.call("rbind", labels) %>% as.data.frame() -> count_label_df
+  title <- paste0(control_condition," vs ", condition)
+  
+  
+  sig <- volcano_data[ volcano_data[[change_var]] %in% c("Significant Up", "Significant Down") , ]
+  
+  volcano_data %>% mutate(significant = uniprot %in% sig$uniprot) -> volcano_data
+  sig$significant <- TRUE
+  label_data <- sig[ sig[[name_var]] %in% highlight_proteins , ]
+  set.seed(12345)
+  volcano_data %>%
+    arrange(group) %>%
+    ggplot(aes_string(x=x_var,
+               y=y_var,
+                fill = "group",
+               alpha = "group")) +
+    geom_point(
+      #alpha = 0.4,
+              size = 1.15,
+               shape=21,
+               stroke=0,
+               col="transparent") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", size=LINE_WIDTH) +
+    geom_vline(xintercept = c(-FC_CUTOFF, FC_CUTOFF), linetype = "dashed", size=LINE_WIDTH) +
+  geom_label(
+    data = count_label_df,
+    mapping = aes(x = as.numeric(x), 
+                  y = as.numeric(y), 
+                  label = count, 
+                  color = bio_group),
+    fill = "transparent", 
+    size=6,
+    size.unit="pt",
+    show.legend = FALSE,
+    inherit.aes = FALSE) +
+    theme_test() +
+    labs(
+      x = substitute(paste('protein expression, log'[2], "(", n, '/', m, ")"), list(n = condition, m = control_condition)),
+      y = substitute(paste('-log'[10], '(p-value)'))
+    ) +
+    scale_fill_manual(values=color_code
+                      ) +
+        scale_color_manual(values=color_code
+                      ) +
+    scale_alpha_manual(values = alpha_scale, guide="none") +
+    my_theme() +
+  theme(strip.text.x = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      legend.title=element_blank(),
+      legend.box.background = element_blank(),
+      legend.position = "top",
+      legend.justification.top = "top",
+      legend.justification = "center",
+      legend.box.just = "center",
+      aspect.ratio=1,
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5),
+      legend.box.margin = margin(l = -5, b = -0.8),
+      legend.key.spacing.y = unit(-0.9, "cm"),
+      legend.key.spacing.x = unit(-0.05, "cm")) + 
+    guides(fill = guide_legend(ncol = 2, 
+                               )) +
+    ylim(0,y_limit) +
+    xlim(-x_limit,x_limit) -> v_plot
+  print(v_plot)
+  
+  save_plot(paste0(volcano_dir, "functional_groups_highlighted/", group, "/", title), width=2 - 0.043, height=4)
+}
+
+row = c(group = "Multiple groups",
+      file_name = "protein_lists/cellular_oxidant_detoxification.csv",
+      column_name = "cellular_oxidant_detoxification")
+
+highlight_redox <- annot_volcano_data %>% filter(group %in% c("Respiratory complex V", "Respiratory complex I-IV")) %>% pull(protein)
+highlight_redox <- c("DNAJC15","TIMM17A","AGK","AK4","DMAC2L","ISCA2","CISD1","FIS1,GDAP1","TMEM135","VAT1")
+
+  make_condition_plot_multi(row, "D8C", annot_volcano_data, "D2", 
+                      highlight_proteins = highlight_redox, 
+                    highlight_color = "#440154")
+
+make_condition_plot_multi(row, "D8A", annot_volcano_data, "D2", 
+                    highlight_proteins = highlight_redox, 
+                  highlight_color = "#440154", y_limit = 14.882450 * 1.001, x_limit = 2.63897 * 1.2)
+
+make_condition_plot_multi(row, "D8C", annot_volcano_data_d8a, "D8A", 
+                      highlight_proteins = highlight_redox, 
+                    highlight_color = "#440154")
+
+```
+
+```{r}
+volcano_data %>% 
+  filter(mitochondrial == "True") %>%
+  pull(log2_FC_Exhaustion.WP...D2.vs..D8A..6315.Proteins.) %>%
+  #log10() %>%
+  summary()
+```
+
+```{r, fig.width=4, fig.height=2}
+volcano_data %>%
+  filter(mitochondrial == "True") %>%
+  group_hierarchy() -> mito_volcano_data
+mito_volcano_data %>%
+  arrange(desc(log2_FC_Exhaustion.WP...D2.vs..D8C..6315.Proteins.)) %>%
+  mutate(rank = 1:nrow(mito_volcano_data)) %>%
+  arrange(group) %>%
+  ggplot(aes(x = rank, y = log2_FC_Exhaustion.WP...D2.vs..D8C..6315.Proteins., fill = group, alpha = group)) + 
+  geom_hline(yintercept = 0, size = LINE_WIDTH, linetype = "dashed", color = "grey") +
+  geom_point(shape = 21,  size =POINT_SIZE - 1, stroke = 0, color = "black", show.legend = FALSE) + 
+  my_theme() + 
+  scale_fill_manual(values = color_code) + 
+  scale_alpha_manual(values = c(0.5, 0.9, 0.9)) + 
+  theme(aspect.ratio = 1) + 
+  labs(y = expression("protein expression, log"[2]*"(D8C/D2)"), x = "protein rank") + 
+  ggtitle("mitochondiral proteins D8C vs D2")
+
+save_plot(
+  fn = "mitochondrial_proetins_D8C_vs_D2.svg",
+  width = 2,
+  height = 4
+)
+```
+
+## Whole proteome vs RNA-seq correlation plot
+
+```{r, fig.height=2, fig.width=3}
+
+correlation_dir <- paste0(plot_dir, "wp_vs_rnaseq/")
+
+correlation_cols <- c("grey"="lightgrey","yellow"="grey40","cyan"="#21918c","blue"="#440154","red"="#bade28",'black'='black')
+gene_color <- function(protein_fc, mrna_fc){
+  if ( abs(protein_fc) > FC_CUTOFF & abs(mrna_fc) > FC_CUTOFF){
+    if((protein_fc * mrna_fc) > 0){
+     return('yellow') 
+    } else {
+      return('cyan')
+    }
+  } else if (abs(protein_fc) < FC_CUTOFF & abs(mrna_fc) < FC_CUTOFF){
+    return('grey')
+  } else if (abs(protein_fc) < FC_CUTOFF & abs(mrna_fc) > FC_CUTOFF){
+    return('blue')
+  } else {
+    return('red')
+  }
+}
+comparisons = c("D8C_D2","D8A_D2","D4A_D2","D4C_D2","D8C_D8A")
+
+create_wp_rna_corr_plot <- function(comparison, proteins_to_label, x_lim = 4.6, y_lim = 6.2){
+  condition = strsplit(comparison, "_")[[1]][1]
+  control = strsplit(comparison, "_")[[1]][2]
+read.csv(paste0(correlation_dir,condition," vs. ",control,".csv")) %>% 
+  mutate(gene_color=mapply(gene_color,logFC_wp,log2FoldChange)) ->df 
+
+df %>% filter(protein %in% proteins_to_label) -> label_data
+
+df %>% filter(gene_color=='red', logFC_wp<0) %>% nrow() -> left_red
+df %>% filter(gene_color=='red', logFC_wp>0) %>% nrow() -> right_red
+df %>% filter(gene_color=='cyan', logFC_wp<0) %>% nrow() -> left_cyan
+df %>% filter(gene_color=='cyan', logFC_wp>0) %>% nrow() -> right_cyan
+df %>% filter(gene_color=='yellow', logFC_wp<0) %>% nrow() -> left_yellow
+df %>% filter(gene_color=='yellow', logFC_wp>0) %>% nrow() -> right_yellow
+df %>% filter(gene_color=='blue', log2FoldChange<0) %>% nrow() -> down_blue
+df %>% filter(gene_color=='blue', log2FoldChange>0) %>% nrow() -> up_blue
+df %>% filter(gene_color=='grey') %>% nrow() -> grey
+
+x_lbl_sprd = x_lim * 0.915
+y_lbl_sprd = y_lim * 0.98
+lbl_alpha = 1
+
+
+x <- c(-x_lbl_sprd,x_lbl_sprd,-x_lbl_sprd,x_lbl_sprd,-x_lbl_sprd,x_lbl_sprd,0,0,0)
+y <- c(0,0,y_lbl_sprd,-y_lbl_sprd,-y_lbl_sprd,y_lbl_sprd,-y_lbl_sprd,y_lbl_sprd,0)
+alpha <- c(lbl_alpha,lbl_alpha,lbl_alpha,lbl_alpha,lbl_alpha,lbl_alpha,lbl_alpha,lbl_alpha,0)
+label <- c(left_red,right_red,left_cyan,right_cyan,left_yellow,right_yellow,down_blue,up_blue,grey)
+color <- c('red','red','cyan','cyan','yellow','yellow','blue','blue','black')
+text_labels <- data.frame(x, y, label, color)
+ratio <- paste0("(",condition, "/",control,")")
+pearson_r_color <- 'grey40'
+df %>%
+  ggplot(aes(x=logFC_wp,y=log2FoldChange)) + 
+  geom_point(alpha=0.5, 
+             size=1, 
+             mapping = aes(
+               fill=gene_color),
+             shape=21,
+             color="black",
+             stroke=POINT_STROKE / 2) + 
+  geom_smooth(method="lm", se=FALSE, color=pearson_r_color, formula = 'y ~ x', size=LINE_WIDTH * 4) +
+  labs(
+    x = substitute(paste('protein expression, log'[2], n), list(n = ratio)),
+    y = substitute(paste('RNA expression, log'[2], n), list(n = ratio))
+  ) +
+  theme_bw() +
+  geom_hline(yintercept = c(FC_CUTOFF, -FC_CUTOFF), linetype = "dashed",size=LINE_WIDTH) + 
+  geom_vline(xintercept = c(FC_CUTOFF, -FC_CUTOFF), linetype = "dashed",size=LINE_WIDTH) + 
+  theme(aspect.ratio=1, legend.position = "none") +
+  
+  # specific proteins
+  geom_point(mapping = aes(fill=gene_color),
+    alpha=1, 
+             data=label_data, 
+             size=1,
+             shape=21, 
+             color="black", 
+             stroke=POINT_STROKE /2) + 
+  geom_text_repel(data = label_data, 
+                   mapping=aes(label=protein, color=gene_color),
+                   size=FONT_SIZE_MM,
+                   segment.color="black",
+                  segment.size = LINE_WIDTH,
+                    min.segment.length = 0.2,
+                  #bg.color = "white",
+        box.padding = 1,
+      direction = "both") +
+  scale_color_manual(values=correlation_cols) +
+  my_theme() +
+  theme(panel.grid.major = element_line(colour = "grey90", linewidth = LINE_WIDTH), 
+        aspect.ratio=1, 
+        legend.position="none") +
+  geom_label(inherit.aes=FALSE,
+            data=text_labels,
+            mapping=aes(x=x,y=y,
+                        label=label, 
+                        fill=color, 
+                        alpha=alpha
+                        ),
+            color='white',
+            size=6, 
+            label.size = 0,
+            size.unit = "pt") + 
+  scale_fill_manual(values=correlation_cols) +
+  ylim(-y_lim,y_lim) +
+  xlim(-x_lim, x_lim) +
+  stat_cor(aes(label = ..r.label..), 
+           color=pearson_r_color, 
+           label.x = -(x_lim * 0.95), 
+           label.y = (y_lim * 0.67), 
+           size=FONT_SIZE_MM) -> plot
+print(plot)
+
+save_plot(paste0(correlation_dir, condition,"_",control, "_pearson_corrplot"), height=2, width = 2)
+}
+
+```
+
+### D8C vs D2
+
+```{r, fig.height=2, fig.width=2}
+create_wp_rna_corr_plot("D8C_D2", c("PXMP2","TMEM135","CDKN2A","GPX1","GPX4","SERPINA1"), 
+                        x_lim=5.9, y_lim = 6.65)
+
+
+```
+
+### D8A vs D2
+
+```{r, fig.height=2, fig.width=2}
+create_wp_rna_corr_plot("D8A_D2", c("PXMP2","TMEM135","CDKN2A","GPX1","GPX4","SERPINA1"), x_lim =5.9, y_lim = 7.15)
+```
+
+### D8C vs D8A
+
+```{r, fig.height=2, fig.width=2}
+create_wp_rna_corr_plot("D8C_D8A", 
+                        c("NR4A3","EGR2","CTLA4","LAG3","GZMB","CDKN2A","GNLY","NQO1"), 
+                        x_lim = 5, 
+                        y_lim = 13.2)
+```
+
+```{r, fig.height=2, fig.width=2}
+create_wp_rna_corr_plot("D4C_D2", c("CDKN2A"), x_lim = 4, y_lim = 6.9)
+create_wp_rna_corr_plot("D4A_D2", c(), x_lim = 4, y_lim = 6.9)
+```
+
+
+## Protein expression bar graphs
+
+```{r, fig.width = 1.35, fig.height=2}
+expression_bar_graph <- function(
+    proteins, 
+    conditions,
+    width,
+    height){
+  paste0(data_dir, "combined_files/20240821_6rep_2MC_two_replicate_var_filter/07_combfiles_percctrl_passes_two_replicate_variability_filter.csv") %>%
+    read_csv(show_col_types = FALSE) %>% 
+    filter(protein %in% proteins) %>% 
+    column_to_rownames("protein") -> df
+  df[,colnames(df)[grepl(
+    paste(conditions, collapse = "|"), colnames(df)
+    )]] %>% 
+    t() %>% as.data.frame() %>%
+    rownames_to_column("replicate") %>%
+    mutate(condition = case_when(
+      grepl("D8C", replicate) ~ "D8C",
+      grepl("D8A", replicate) ~ "D8A",
+      grepl("D4A", replicate) ~ "D4A",
+      grepl("D4C", replicate) ~ "D4C"
+    )) %>%
+    pivot_longer(
+      cols = proteins,
+      names_to = "protein",
+      values_to = "percent_control"
+    ) %>%
+    drop_na() -> df
+  # Calculates mean, sd, se and IC
+  df %>%
+    group_by(condition, protein) %>%
+    summarise( 
+      n=n(),
+      mean=mean(percent_control),
+      sd=sd(percent_control),
+      fun = mean
+    ) %>%
+    mutate(se=sd/sqrt(n))  %>%
+    mutate(ic=se * qt((1-0.05)/2 + .5, n-1)) -> stat_df
+  df$condition <- factor(df$condition, levels = c("D4A", "D8A", "D4C", "D8C"))
+  df %>% 
+    ggplot(
+    aes(x =condition, y = percent_control, fill = condition)
+  ) + 
+    geom_bar(stat = "summary", 
+           fun = "mean",
+           show.legend = FALSE,
+           width = 0.75,
+           alpha = 0.7) +
+    geom_jitter(shape = 21, 
+              width = 0.1,
+              height = 0,
+              color = "black",
+              size = POINT_SIZE - 1,
+              stroke = POINT_STROKE,
+              show.legend = FALSE) + 
+    geom_errorbar(data = stat_df, 
+                mapping = aes(
+                  x = condition, 
+                  ymin = mean - se,
+                  ymax = mean + se
+                ),
+                inherit.aes = FALSE,
+                width = 0.4,
+                size = LINE_WIDTH) +
+    facet_wrap(~protein, scales = "free_y") + 
+    my_theme() + 
+    geom_hline(yintercept = 100, 
+               size = LINE_WIDTH, 
+               linetype="dashed"
+               ) + 
+  scale_y_continuous(
+    limits = c(0, 180),
+    expand = c(0,0)
+  )  + 
+  theme(
+    strip.background = element_blank(),
+    panel.spacing = unit(2,"mm"),
+    strip.text = element_text(size = 8),
+    panel.border =element_blank(),
+    axis.line.x = AXIS_LINE,
+    axis.line.y = AXIS_LINE
+  ) + 
+  scale_fill_manual(values = cols) +
+  labs(x = "", y = "protein expression (%D2)") -> plt
+  print(plt)
+  
+  save_plot(    
+    paste0(plot_dir, 
+           "bargraphs/",
+           paste(proteins, collapse = "_"),
+           "_expression_bargraph"),
+    width = width,
+    height = height)
+}
+
+expression_bar_graph(
+  proteins = c("PPAT"),
+  conditions = c("D4A", "D4C", "D8A", "D8C"),
+  width = 1.3,
+  height = 2
+)
+
+expression_bar_graph(
+  proteins = c("PIP5K1A"),
+  conditions = c("D4A", "D4C", "D8A", "D8C"),
+  width = 1.3,
+  height = 2 - 0.136
+)
+```
+
+```{r, fig.height=2, fig.width=1.7}
+expression_bar_graph(
+  c("MAP2K3","MAP2K4"),
+  c("D8A", "D8C"),
+  width = 1.7,
+  height = 2
+)
+
+expression_bar_graph(
+  proteins = c("HSPA9", "LONP1"),
+  conditions = c("D8A", "D8C"),
+  width = 1.7,
+  height = 2
+)
+
+```
+
+## Fold change heatmap
+
+```{r, fig.width=2.3, fig.height=1.9}
+wp_fc_heatmap <- function(wp_markers, bio_group = NULL){
+# convert to factor to create the right order
+bio_group <- factor(bio_group, unique(bio_group))
+conditions <- c("D4A","D8A","D4C","D8C")
+# condition annotation
+ba <- HeatmapAnnotation(foo = anno_block(
+  gp = gpar(fill = cols[conditions], col = "transparent"), 
+  labels =  conditions,
+  height = unit(3, "mm"),
+  labels_gp = gpar(col = "white", fontsize =6)))
+
+volcano_data <- paste0(volcano_dir,"volcano_data.csv")  %>% 
+  read_csv(show_col_types = FALSE) %>% 
+  rename(protein = 'protein_Exhaustion WP - D8C vs. D2 (6315 Proteins)') %>% 
+  # rename some proteins to synonyms
+  mutate(protein = case_when(
+    protein == "HAVCR2" ~ "TIM3",
+    protein == "TBX21" ~ "TBET",
+    TRUE ~ protein)) %>%
+  filter(protein %in% wp_markers) %>%
+  mutate(protein = factor(protein, levels = wp_markers)) %>%
+  arrange(protein)  %>%
+  # select fold change and protein name columns
+  dplyr::select(starts_with("log2_FC_") | "protein") %>% 
+  column_to_rownames("protein") -> fc_df
+
+# parse conditions from sample names
+colnames(fc_df) %>%
+lapply(
+  FUN = function(file){case_when(grepl("D4A",file) ~ "D4A",grepl("D8A",file) ~ "D8A",
+          grepl("D4C",file) ~ "D4C",grepl("D8C",file) ~ "D8C")})  %>% 
+  unlist() %>%
+  factor(levels = names(cols)) -> channel_conditions
+column_gap <- unit(0.25, "mm")
+standard_text <- gpar(fontsize = FONT_SIZE, fontfamily = FONT_FAMILY, color = "black")
+# sort columns based on condition order
+fc_df <- fc_df[,rank(channel_conditions,ties.method = "first")]
+ fc_df %>%
+  as.matrix() %>%
+  Heatmap(
+          top_annotation =  ba,
+          show_column_dend = FALSE,
+          column_split = sort(channel_conditions),
+          column_gap = column_gap,
+          show_row_dend = FALSE,
+          show_column_names = FALSE,
+          cluster_columns = FALSE,
+          cluster_rows = TRUE,
+          row_names_side = "left",
+          show_row_names = TRUE,
+          #row_split = bio_group,
+          row_gap = unit(2, "mm"),
+          row_names_gp = standard_text,
+          row_title_gp = standard_text,
+          row_title_side = "right",
+          name = "log2(FC from D2)",
+          rect_gp = gpar(col = "white", lwd = LINE_WIDTH),
+          column_title = NULL,
+          cell_fun = function(j, i, x, y, width, height, fill) {
+        grid.text(sprintf("%.1f", fc_df[i, j]), x, y, gp = gpar(fontsize = 3))
+},
+          heatmap_legend_param = list(
+            title = expression("log"[2]*"(FC from D2)"),
+            legend_height = unit(1, "cm"), 
+            grid_width = unit(0.2, "cm"), 
+            title_gp =standard_text, 
+            labels_gp = standard_text ),
+          col=colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+          ) -> ht
+return(ht)
+}
+
+# proteins to include in heatmap
+wp_markers <- c("GZMA",  "GZMM",  "GZMK", "GZMH","GZMB",
+  "NR4A3","EGR2", "TBET", "IRF8", 
+  "CTLA4", "LAG3", "TIM3")
+
+# categories for splitting rows
+bio_group <- c(
+  rep("Granzymes", 5),
+  rep("Transcription\nfactors", 4),
+  rep("Checkpoint\nreceptors", 3)
+)
+ht <- wp_fc_heatmap(wp_markers, bio_group)
+pdf(
+  paste0(plot_dir, "heatmap/wp_exhaustion_markers_fc.pdf"),
+  width = 2.3,
+  height = 1.9
+)
+
+print(ht)
+dev.off()
+ht
+```
+
+## Subcellular localization
+
+```{r, fig.height=2, fig.width=2.75}
+subcell_palette <- c(
+  "Nucleus" = "#9B75A4",
+  "Mitochondria" = "#999CC1",
+  "Cytosol" = "#8DB8C3",
+  "Membrane" = "#8ED4BF"
+)
+
+'../../data/whole_proteome/subcell/UPR transcription factors subcellular fractionation (quantification)_HS_formatting.csv' %>%
+  read_csv() %>%
+  pivot_longer(cols = starts_with("D"),
+               names_to = "variable",
+               values_to = "value") %>%
+  # take mean across 2 replicates
+  group_by(protein, variable) %>%
+  summarise(value = mean(value, na.rm = TRUE)) %>%
+  separate(variable,
+           into = c("condition", "fraction"),
+           sep = "_") %>%
+  mutate(
+    fraction = case_when(
+      fraction == "Cyt" ~ "Cytosol",
+      fraction == "Mem" ~ "Membrane",
+      fraction == "Mito" ~ "Mitochondria",
+      fraction == "Nuc" ~ "Nucleus",
+      TRUE ~ fraction
+    )
+  ) %>%
+  filter(protein != "CHOP") %>%
+  ggplot(aes(x = condition, y = value, fill = fraction)) +
+  geom_col() +
+  facet_grid(cols = vars(protein), scales = "free_y") +
+  labs(x = NULL,
+       y = "% subcellular localization",
+       fill = NULL) +
+  my_theme() +
+  theme(
+    panel.border = element_blank(),
+    axis.line.x = AXIS_LINE,
+    axis.line.y = AXIS_LINE,
+    strip.text = element_text(size = 6, family = "Arial"),
+    strip.background = element_blank(),
+    panel.spacing.x = unit(0.5, "mm"),
+    legend.key.height = unit(2, "mm"),
+    legend.key.width = unit(2, "mm"),
+    legend.key.spacing.x = unit(0, "mm"),
+    legend.margin = margin(l = -10),
+    legend.text = element_text(
+      size = 6,
+      color = "black",
+      family = "Arial",
+      margin = margin(l = 0)
+    ),
+  ) +
+  scale_fill_manual(values = subcell_palette) +
+  scale_y_continuous(expand = c(0.02, 0)) 
+save_plot(
+  fn = paste0(
+    plot_dir,
+    "subcellular_localization/subcellular_localization_transposed"
+  ),
+  width = 2.75,
+  height = 2 - .07
+)
+
+```

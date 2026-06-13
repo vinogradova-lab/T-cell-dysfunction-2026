@@ -1,0 +1,968 @@
+```{r}
+
+# load figure settings
+source("../../bin/figure_utils.R")
+
+analysis_dir <- "../../data/metabolomics/cross_replicate_analysis"
+results_dir <-paste0(analysis_dir, "/04_results/cell_volume_normalized/")
+'../../data/metabolomics/20240924_list of polar metabolites for the targeted assay_annotations_LSP_v3.csv' %>% read_csv(show_col_types = FALSE) -> annotations_df
+```
+
+
+# Whole cell metabolomics
+
+### PCA
+
+```{r, fig.height=4, fig.width=2}
+replot_pca(
+  pca_dir = paste0(results_dir, "/pca/"),
+  x = "PC1",
+  y = "PC3",
+  arrow_scaling = 50
+)
+```
+
+
+
+### Z-score heatmap
+
+```{r, fig.height=7.3, fig.width=4}
+seed = 12345
+
+paste0(analysis_dir, "/03_combined_files/combreplicates_channel_ratio_normalized.csv") %>% 
+  read.csv() %>% 
+  drop_na() -> full_df
+
+  ha = HeatmapAnnotation(
+    condition = anno_block(
+      gp = gpar(fill =cols,
+                col = "white"),
+      labels = names(cols),
+      labels_gp = gpar(col = "white", 
+                       fontsize = 7.5, fontfamily = FONT_FAMILY)
+    )
+  )
+  
+  
+  names(full_df)[names(full_df) == 'Compound'] <- 'compound'
+  
+  full_df <- merge(full_df, annotations_df, by.x = "compound", by.y = "NAME", all.x= TRUE)
+  
+  full_df %>% select(starts_with("D")) -> channel_ratio_df
+  rownames(channel_ratio_df) <- full_df$Alias
+  
+  # filter to top 100 based on variance
+  variances <- apply(channel_ratio_df, 1, var)
+  top_100_variable <- names(sort(variances, decreasing = TRUE)[1:100])
+  channel_ratio_df <- channel_ratio_df[top_100_variable,]
+  channel_ratio_df <- channel_ratio_df %>% arrange(rownames(channel_ratio_df))
+  
+  channel_ratio_df %>% rownames_to_column("compound") %>% arrange(compound) -> full_df
+  
+    merge(full_df, annotations_df, by.x = "compound", by.y = "Alias", all.x= TRUE) %>%
+      arrange(compound) %>%
+    # clean up pathway annotations
+    mutate(`Super Pathway (MSK metabolomics Core dMRM method` = 
+               case_when(`Super Pathway (MSK metabolomics Core dMRM method` == "Nucleotide?" ~ "Nucleotide",
+                         `Super Pathway (MSK metabolomics Core dMRM method` == "Lipid?" ~ "Lipid",
+                         `Super Pathway (MSK metabolomics Core dMRM method` == "Lipids" ~ "Lipid",
+                         `Super Pathway (MSK metabolomics Core dMRM method` == "" ~ "Other",
+                         `Super Pathway (MSK metabolomics Core dMRM method` == NA ~ "Other",
+                         TRUE ~ `Super Pathway (MSK metabolomics Core dMRM method`)) %>%
+    pull(`Super Pathway (MSK metabolomics Core dMRM method`) %>% replace_na(replace = "Other") -> metabolite_class
+  
+  col_fun = colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+  
+  col_pal <- list(class = c("Lipid" = "#fde725",
+     "Amino Acid" = "#a0da39",
+     "Cofactors and Vitamins" = "#4ac16d",
+     "Uridine" = "#1fa187",
+     "Nucleotide" = "#277f8e",
+     "Energy" = "#365c8d",
+     "Carbohydrate" = "#46327e",
+     "Xenobiotic" = "#440154",
+     "Other" = "lightgrey"
+     ))
+  
+  # metabolite class annotation
+  ra <- HeatmapAnnotation(class=metabolite_class, 
+                          which = "row", 
+                          col = col_pal, 
+                          show_annotation_name = FALSE,
+                          annotation_legend_param = list(
+                            class = list(
+                              title = "metabolite class",
+                              title_gp =gpar(fontsize =8, fontfamily = FONT_FAMILY ), 
+                              labels_gp = gpar(fontsize =FONT_SIZE, fontfamily = FONT_FAMILY),
+                              at = names(col_pal$class)
+                            )
+                          ),
+                          simple_anno_size = unit(3, "mm")
+                          
+  )
+  
+  
+  
+  channel_ratio_df %>% 
+    as.matrix() %>% 
+    # z-score calculation
+    apply(1,scale) %>% 
+    as.data.frame()  %>%
+    # sort samples by condition
+    mutate(sample_name = colnames(channel_ratio_df)) %>%
+    mutate(condition = lapply(sample_name, str_split_i, pattern="_",i=1) %>% unlist()) %>% 
+    mutate(condition = factor(condition, levels = names(cols))) %>%
+    arrange(condition) -> t_df
+  channel_conditions <- t_df$condition
+  
+  t_df %>%  
+    select(-c(condition)) %>%
+    column_to_rownames("sample_name") %>%
+    t() -> ht_mat
+  
+    set.seed(seed)
+  Heatmap(ht_mat,
+      bottom_annotation = ha,
+      right_annotation = ra,
+      show_column_dend = FALSE,
+      column_split = channel_conditions,
+      column_title = NULL,
+      show_row_dend = FALSE,
+      show_column_names = FALSE,
+      row_km = 4,
+      cluster_columns = FALSE,
+      #rect_gp = gpar(col = "white", lwd = LINE_WIDTH),
+      row_gap = unit(0.5, "mm"),
+      column_gap = unit(0.5, "mm"),
+      cluster_rows = TRUE,
+      row_names_side = "right",
+      show_row_names = TRUE,
+      row_names_gp = gpar(fontsize = 5, fontfamily = FONT_FAMILY),
+      row_title_gp = gpar(fontsize = 6, fontfamily = FONT_FAMILY),
+      column_names_gp = gpar(fontsize = 5, fontfamily = FONT_FAMILY),
+      name = "z-score",
+      heatmap_legend_param = list(
+        title = "z-score",
+        title_gp =gpar(fontsize = 6, fontfamily = FONT_FAMILY), 
+        labels_gp = gpar(fontsize =FONT_SIZE, fontfamily = FONT_FAMILY)
+        ),
+      col=col_fun) -> ht
+  
+  pdf( file = paste0(results_dir, "heatmap/heatmap_z_score_hierarchical_clustering_conditions_split.pdf"), 
+  width = 4,
+  height = 7.3)
+  set.seed(seed)
+print(ht)
+dev.off()
+set.seed(seed)
+print(ht)
+
+
+ht_mat %>% 
+  as_data_frame() %>% 
+  rownames_to_column("compound_alias") %>% 
+  write_csv(
+    paste0(results_dir, "heatmap/z_score_data.csv")
+    )
+```
+
+
+### Fold change heatmap
+
+```{r, fig.width = 1.8, fig.height=2}
+
+c("Adenine",
+"Adenosine",
+"AMP",
+"ADP",
+"ATP",
+"AICAR",
+"Guanine",
+"Guanosine",
+"GMP",
+"GDP",
+"GTP",
+"Hypoxanthine",
+"Inosine",
+"IMP") -> nucs_highlight
+
+conditions <- c("D8A", "D8C")
+
+ba <- HeatmapAnnotation(
+  foo = anno_block(
+    gp = gpar(fill = cols[conditions], 
+              col = "transparent"), 
+    labels =  conditions,
+    height = unit(3,"mm"),
+    labels_gp = gpar(col = "white", fontsize =6)))
+
+pdf(file=paste0(results_dir, "heatmap/fold_change_whole_cell_nucleotides.pdf"),width=2.1,height=2)
+paste0(results_dir, "volcano_plots/volcano_data.csv") %>% 
+  read_csv(show_col_types = FALSE) %>%
+  rename(compound = "Alias") %>%
+  filter(compound %in% nucs_highlight) %>% 
+  mutate(compound = factor(compound, levels = nucs_highlight)) %>% 
+  arrange(compound)  %>%
+  column_to_rownames("compound") %>%
+  select(starts_with("log2_FC_") & matches(paste(conditions, collapse = "|"))) %>%
+  as.matrix() %>%
+  Heatmap(
+          top_annotation = ba,
+          show_column_dend = FALSE,
+          column_split = conditions,
+          show_row_dend = FALSE,
+          show_column_names = FALSE,
+          cluster_columns = FALSE,
+          cluster_rows = FALSE,
+          row_names_side = "left",
+          row_names_gp = gpar(fontsize =6 ),
+          row_title_gp = gpar(fontsize =6 ),
+          row_title_side = "right",
+          name = "log2(FC from D2)",
+          rect_gp = gpar(col = "white", lwd = LINE_WIDTH),
+          column_title = NULL,
+          heatmap_legend_param = list(legend_height = unit(1, "cm"), grid_width = unit(0.2, "cm"), title_gp =gpar(fontsize =6 ), labels_gp = gpar(fontsize =6 ) ),
+          column_gap = unit(0.5/2, "mm"),
+          col=colorRamp2(c(-3, 0, 3), c("blue", "white", "red"))) -> ht
+print(ht)
+dev.off()
+print(ht)
+```
+
+### Volcano plots
+
+
+```{r}
+metabolite_volcano_plot <- function(volcano_data,
+                                    condition = "D8C",
+                                    y_lim = 20,
+                                    x_lim = 6.5,
+                                    file_name = "metabolomics",
+                                    target_name = "Metabolites",
+                                    add_labels = TRUE) {
+  nudge_x <- 0
+  nudge_y <- 3
+  label_bound = 0
+  y_limit <- y_lim
+  x_limit <- x_lim
+  label_upper_bound = x_limit + 3
+  box_padding <- 0.1
+  control_condition <- "D2"
+  
+  suffix <- paste0(
+    "_",
+    file_name,
+    "...",
+    control_condition,
+    ".vs..",
+    condition,
+    "..",
+    as.character(nrow(volcano_data)),
+    ".",
+    target_name,
+    "."
+  )
+  
+  x_var <-
+    paste0("log2_FC", suffix)
+  y_var <-
+    paste0("X.log10_pval", suffix)
+  change_var = paste0("Regulation", suffix)
+  name_var = paste0("compound")
+  
+  title <- paste0(control_condition, " vs ", condition)
+  print(max(abs(volcano_data[[x_var]])))
+  print(max(abs(volcano_data[[y_var]])))
+  
+  alphas_binary <- c(0.2, 0.9)
+  
+  sig <-
+    volcano_data[volcano_data[[change_var]] %in% c("Significant Up", "Significant Down"),]
+  label_data <- sig %>% filter(pathway != "Other")
+  
+  
+  # build label dataframe
+  labels <- list()
+  y = y_limit * (0.96875)
+  x = x_limit * (0.88679245283)
+  for (direction in c("Significant Up", "Significant Down")) {
+    for (bio_group in names(cols_three)) {
+      volcano_data[volcano_data[[change_var]] == direction &
+                     volcano_data[["pathway"]] == bio_group,] %>%
+        nrow() -> protein_count
+      r <- c(
+        "direction" = direction,
+        "bio_group" = bio_group,
+        "count" = protein_count,
+        "x" = x,
+        "y" = y
+      )
+      labels[[paste0(bio_group, direction)]] <- r
+      y <- y - (y_limit * 0.09375)
+    }
+    y <- y_limit * (0.96875)
+    x <- x * -1
+  }
+  
+  do.call("rbind", labels) %>% as.data.frame() -> count_label_df
+  
+  
+  # Plot data
+  volcano_data %>%
+    mutate(significant = compound %in% sig$compound) %>%
+    arrange(significant) -> volcano_data
+  
+  volcano_data %>%
+    ggplot(aes_string(
+      x = x_var,
+      y = y_var,
+      fill = "pathway",
+      alpha = "significant"
+    )) +
+    ylim(0, y_limit) +
+    xlim(-x_limit, x_limit) +
+    scale_alpha_manual(values = alphas_binary, guide = "none") +
+    geom_point(
+      data = volcano_data %>% filter(significant == FALSE),
+      size = 1,
+      shape = 21,
+      stroke = POINT_STROKE / 2,
+      col = "black",
+      fill = 'gray88'
+    ) +
+    geom_point(
+      data = volcano_data %>% filter(pathway == "Other", significant == TRUE),
+      size = 1,
+      shape = 21,
+      stroke = POINT_STROKE / 2,
+      col = "black"
+    ) +
+    geom_point(
+      data = volcano_data %>% filter(pathway != "Other", significant == TRUE),
+      size = 1,
+      shape = 21,
+      stroke = POINT_STROKE / 2,
+      col = "black"
+    ) +
+    guides(fill = guide_legend(ncol = 2)) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed",
+      size = LINE_WIDTH
+    ) +
+    geom_vline(
+      xintercept = c(-FC_CUTOFF, FC_CUTOFF),
+      linetype = "dashed",
+      size = LINE_WIDTH
+    ) +
+    theme_test() +
+    labs(x = substitute(
+      paste(a, ' abundance, log'[2], "(", n, '/', m, ")"),
+      list(a = tolower(str_remove(target_name, "s")),n = condition, m = control_condition)
+    ),
+    y = substitute(paste('-log'[10], '(p-value)'))) +
+    scale_fill_manual(values = cols_three) +
+    scale_color_manual(values = cols_three) +
+    my_theme() +
+    theme(
+      strip.text.x = element_blank(),
+      strip.background = element_rect(colour = "white", fill = "white"),
+      legend.title = element_blank(),
+      legend.box.background = element_blank(),
+      legend.position = "top",
+      aspect.ratio = 1,
+      legend.key = element_blank(),
+      legend.box = element_blank(),
+      legend.text = element_text(
+        size = 6,
+        color = "black",
+        family = "Arial",
+        margin = margin(l = -4, r = -4)
+      ),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -5.7),
+      legend.key.spacing.y = unit(-4, "mm"),
+      legend.key.spacing.x = unit(0, "cm")
+    ) +
+    geom_label(
+      data = count_label_df,
+      mapping = aes(
+        x = as.numeric(x),
+        y = as.numeric(y),
+        label = count,
+        fill = bio_group
+      ),
+      color = "white",
+      size = 6,
+      size.unit = "pt",
+      show.legend = FALSE,
+      inherit.aes = FALSE
+    )   -> v_plot
+  if(add_labels){
+    v_plot <- v_plot +
+    geom_text_repel(
+      data = label_data[label_data[[change_var]] == "Significant Down",],
+      aes_string(
+        x = x_var,
+        y = y_var,
+        color = "pathway",
+        label = "Alias"
+      ),
+      direction    = "both",
+      box.padding = box_padding,
+      nudge_x = -nudge_x,
+      nudge_y = nudge_y,
+      show.legend = FALSE,
+      xlim = c(-label_upper_bound, -label_bound),
+      size = 1.76389,
+      #bg.color = "white",
+      max.overlaps = getOption("ggrepel.max.overlaps", default = 30),
+      min.segment.length = 0,
+      segment.size = LINE_WIDTH,
+      inherit.aes = FALSE
+    ) +
+    geom_text_repel(
+      data = label_data[label_data[[change_var]] == "Significant Up",],
+      aes_string(
+        x = x_var,
+        y = y_var,
+        color = "pathway",
+        label = "Alias"
+      ),
+      direction    = "both",
+      box.padding = box_padding,
+      nudge_x = nudge_x,
+      nudge_y = nudge_y,
+      xlim = c(label_bound, label_upper_bound),
+      force_pull = 0,
+      max.overlaps = getOption("ggrepel.max.overlaps", default = 30),
+      size = 1.76389,
+      #bg.color = "white",
+      show.legend = FALSE,
+      min.segment.length = 0,
+      segment.size = LINE_WIDTH,
+      inherit.aes = FALSE
+    ) 
+  }
+  print(v_plot)
+}
+```
+
+
+```{r, fig.width=2, fig.height=2.5}
+fn <-
+  paste0(results_dir, 'volcano_plots/volcano_data.csv')
+
+fn %>% read.csv() -> volcano_data
+
+cols_three <- c(
+  "Glycolysis" = "#21918c",
+  "TCA" = "#440154",
+  "Other" = UNCHANGED_COL
+)
+
+volcano_data$compound <- volcano_data$Compound
+
+
+glycolysis <-
+  metabo_lists %>%
+  filter(plotting_subcategory == "Glycolysis") %>%
+  pull(metabolite)
+
+tca <-
+  metabo_lists %>%
+  filter(plotting_subcategory == "TCA") %>%
+  pull(metabolite)
+
+volcano_data %>%
+  mutate(
+    pathway = case_when(
+      (compound %in% glycolysis) & (compound %in% tca) ~ "Shared",
+      compound %in% glycolysis ~ "Glycolysis",
+      compound %in% tca ~ "TCA",
+      TRUE ~ "Other"
+    )
+  ) -> volcano_data
+
+
+for (display_condition in conditions) {
+  metabolite_volcano_plot(volcano_data, condition = display_condition, y_lim = 23)
+  save_plot(
+    paste0(
+      volcano_dir,
+      "TCA_glycolysis_",
+      display_condition,
+      "_vs_",
+      "D2"
+    ),
+    width = 2,
+    height = 4
+  )
+}
+
+metabo_lists -> santosh_lists
+
+purine_nucleotide <- santosh_lists %>%
+  filter(category == "Purine nucleotide") %>%
+  pull(metabolite)
+
+pyrimidine_nucleotide <- santosh_lists %>%
+  filter(category == "Pyrimidine nucleotide") %>%
+  pull(metabolite)
+
+volcano_data %>%
+  mutate(
+    pathway = case_when(
+      (compound %in% purine_nucleotide) &
+        (compound %in% pyrimidine_nucleotide) ~ "Shared",
+      compound %in% purine_nucleotide ~ "Purine nucleotide",
+      compound %in% pyrimidine_nucleotide ~ "Pyrimidine nucleotide",
+      TRUE ~ "Other"
+    )
+  ) -> volcano_data
+
+cols_three <- c(
+  "Pyrimidine nucleotide" = "#21918c",
+  "Purine nucleotide" = "#440154",
+  "Shared" = "#bade28",
+  "Other" = UNCHANGED_COL
+)
+for (display_condition in conditions) {
+  v_plot <-
+    metabolite_volcano_plot(volcano_data, condition = display_condition, y_lim = 23)
+  save_plot(
+    paste0(
+      volcano_dir,
+      "purine_pyrimidine_",
+      display_condition,
+      "_vs_D2"
+    ),
+    width = 2,
+    height = 4
+  )
+}
+
+```
+
+
+# Whole cell lipidomics
+
+### PCA
+
+```{r, fig.height=4, fig.width=2}
+
+analysis_dir <- "../data/lipidomics/cross_replicate_analysis"
+results_dir <-paste0(analysis_dir, "/04_results/cell_volume_normalized/")
+
+pca_dir <- paste0(results_dir, "pca/")
+
+replot_pca(
+  pca_dir,
+  "PC1",
+  "PC2",
+  90
+)
+
+```
+
+### Volcano plots
+
+```{r}
+fn <-
+  paste0(results_dir, 'volcano_plots/D2_comparison/volcano_data.csv')
+
+fn %>% read.csv() -> volcano_data
+paste0(results_dir, 'volcano_plots/lipid classes.csv') %>% 
+  read_csv(show_col_types = FALSE) -> lipid_lists
+```
+
+
+```{r, fig.width=2, fig.height=4}
+fn <-
+  paste0(results_dir, 'volcano_plots/D2_comparison/volcano_data.csv')
+
+fn %>% read.csv() %>% mutate(Alias = lipid) -> volcano_data
+paste0(results_dir, 'volcano_plots/lipid classes.csv') %>% 
+  read_csv(show_col_types = FALSE) -> lipid_lists
+
+cols_three <- c(
+  "Triglyceride" = "#21918c",
+  "Ether-phospholipid" = "#440154",
+  "Phospholipid" = "#bade28",
+  "Other" = UNCHANGED_COL
+)
+
+volcano_data$compound <- volcano_data$lipid
+
+
+triglyceride <-
+  lipid_lists %>%
+  filter(class == "triglyceride") %>%
+  pull(lipid)
+
+ether_pl <-
+  lipid_lists %>%
+  filter(`broad class` == "ether phospholipid") %>%
+  pull(lipid)
+
+pl <-
+  lipid_lists %>%
+  filter(`broad class` == "phospholipid") %>%
+  pull(lipid)
+
+volcano_data %>%
+  mutate(
+    pathway = case_when(
+      lipid %in% triglyceride ~ "Triglyceride",
+      lipid %in% ether_pl ~ "Ether-phospholipid",
+      lipid %in% pl ~ "Phospholipid",
+      TRUE ~ "Other"
+    )
+  ) -> volcano_data
+
+volcano_dir <- paste0(results_dir, "volcano_plots")
+volcano_dir
+
+metabolite_volcano_plot(
+  volcano_data, 
+  condition = "D8C", 
+  y_lim = 8, 
+  x_lim = 7.2,
+  target_name = "Lipids", 
+  file_name = "lipidomics", 
+  add_labels = FALSE)
+save_plot(
+  paste0(
+    volcano_dir,
+    "PL_TCG_",
+    "D8C",
+    "_vs_",
+    "D2"
+  ),
+  width = 2,
+  height = 4
+)
+
+metabolite_volcano_plot(
+  volcano_data, 
+  condition = "D8A", 
+  y_lim = 5, 
+  x_lim = 6,
+  target_name = "Lipids", 
+  file_name = "lipidomics", 
+  add_labels = FALSE)
+save_plot(
+  paste0(
+    volcano_dir,
+    "PL_TCG_",
+    "D8A",
+    "_vs_",
+    "D2"
+  ),
+  width = 2,
+  height = 4
+)
+```
+
+# Isotope tracing
+
+```{r, fig.width=2.05, fig.height=0.9}
+results_dir <- '../../data/isotope_tracing/13C Human T-cell isotope tracing 041621'
+
+isotope_files <- c("/13C-glc_cleaned_isotope_trace_data.csv" = "13C-Glc", 
+                   "/13C-gln_cleaned_isotope_trace_data.csv" = "13C-Gln")
+
+rename_compounds <- function(x){
+  renames <- c(
+    "alpha-ketoglutarate" = "αKG",
+    "phosphoenolpyruvate \\(PEP\\)" = "PEP",
+    "glutathione, reduced \\(GSH\\)" = "GSH",
+    " 3-phosphate" = "-3P",
+    " 6-phosphate" = "-6P"
+  )
+  x <- str_replace_all(x, renames)
+  return(
+    paste(toupper(substr(x, 1, 1)), substr(x, 2, nchar(x)), sep="")
+  )
+}
+
+isotope_cols <-cols[c("D8A", "D8C")]
+
+isotope_trace_plot <- function(file, width, height, split_rows = c(), clstr_rows = TRUE, title_row = "", order = c()){
+  paste0(results_dir, file) %>%
+    read_csv(show_col_types = FALSE) %>%
+    mutate(molecule_variable = rename_compounds(molecule_variable)) %>%
+    filter(molecule_variable %in% order) %>%
+    column_to_rownames("molecule_variable") -> isotope_data
+  
+  col_fun = colorRamp2(c(0, 50, 100), c("blue", "white", "red"))
+  
+  # condition labels
+  ba <- HeatmapAnnotation(
+    foo = anno_block(
+      gp = gpar(
+        fill = isotope_cols, 
+        col = "transparent"), 
+      labels =  names(isotope_cols),
+      labels_gp = gpar(col = "white", fontsize =6),
+      height=unit(3,"mm")))
+  
+  # parse conditions from sample names
+  isotope_data %>%
+    t() %>%
+    as.data.frame() %>%
+    rownames_to_column("sample_name") %>%
+    mutate(condition = lapply(sample_name, str_split_i, pattern="_",i=1) %>% unlist()) %>%
+    mutate(condition = case_when(
+      condition == "hAc" ~ "D8A",
+      condition == "hChr" ~ "D8C"
+    )) %>%
+    mutate(condition = factor(condition, levels = names(cols))) %>% 
+    pull(condition) -> sample_conditions
+  
+  column_gap <- unit(0.5/2, "mm")
+  text_graphics <- gpar(fontsize=6, fontfamily = "Arial")
+  ht_opt$COLUMN_ANNO_PADDING = column_gap
+  ht_opt$HEATMAP_LEGEND_PADDING = column_gap
+  ht_opt$TITLE_PADDING = column_gap
+  
+  if (length(order) > 0){
+    #isotope_data <-   isotope_data %>% select(order) 
+    isotope_data <- isotope_data[match(order, rownames(isotope_data)),]
+    print(isotope_data)
+  }
+  
+  isotope_data %>%
+    as.matrix() %>%
+    Heatmap(
+            top_annotation = ba,
+            show_column_dend = FALSE,
+            column_split = sample_conditions,
+            show_row_dend = FALSE,
+            show_column_names = FALSE,
+            cluster_row_slices = FALSE,
+            cluster_columns = FALSE,
+            cluster_rows = clstr_rows,
+            row_names_side = "left",
+            row_title = NULL,
+            row_names_gp = gpar(fontsize =6, family = "Arial" ),
+            name = paste0("% labeled\nby ", isotope_files[file]),
+            rect_gp = gpar(col = "white", lwd = LINE_WIDTH),
+            column_title = NULL,
+            row_split = split_rows,
+            heatmap_legend_param = list(legend_height = unit(1.5, "cm"), 
+                                        grid_width = unit(0.2, "cm"), 
+                                        title_gp =gpar(fontsize =6, family = "Arial"), 
+                                        labels_gp = gpar(fontsize =6 ), family = "Arial" ),
+            column_gap = column_gap,
+            col=col_fun) -> ht
+  pdf(
+    paste0(results_dir, "/heatmaps/", isotope_files[file], ".pdf"),
+    width = width,
+    height = height
+  )
+  print(ht)
+  dev.off()
+  print(ht)
+  
+  return(isotope_data)
+}
+
+isotope_data = isotope_trace_plot(
+  names(isotope_files)[1],
+  width = 2,
+  height = 0.9,
+  order = c(
+    "Glucose-6P m+6",
+    #"Fructose 1,6-biphosphate m+6",
+    #"Glyceraldehyde-3P m+3",
+    #"PEP m+3",
+    "Pyruvate m+3",
+    "Citrate m+2",
+    "Fumarate m+2",
+    "Malate m+2",
+    "Aspartate m+2"
+  ),
+  clstr_rows = FALSE
+)
+```
+
+```{r, fig.width=2, fig.height=0.95}
+
+isotope_bargraph <- function(file, metabs, name){
+paste0(results_dir, file) %>% 
+  read_csv() %>%
+  column_to_rownames("molecule_variable") -> df
+  print(df)
+df %>%
+  rownames_to_column("molecule_variable") %>%
+  mutate(molecule_variable = rename_compounds(molecule_variable)) %>%
+  filter(molecule_variable %in% metabs) %>%
+  mutate(molecule_variable = as.character(molecule_variable)) %>%
+  pivot_longer(cols = colnames(df)) %>%
+  mutate(
+    condition = case_when(
+      str_starts(name, "hAc") ~ "D8A",
+      TRUE ~ "D8C"
+    )
+  ) %>% 
+  mutate(molecule_variable = factor(molecule_variable, levels = rev(metabs))) %>%
+  arrange(molecule_variable) %>%
+  ggplot(aes(x = molecule_variable, y = value, fill = condition)) + 
+  geom_bar(width = 0.6, color = "black", size = LINE_WIDTH, position = position_dodge(width = 0.8),stat = "summary",
+    fun = "mean", alpha = 1, show.legend = FALSE) + 
+  geom_point(shape = 21, stroke = POINT_STROKE, size = POINT_SIZE - 1.25, position = position_jitterdodge(jitter.width = 0.2), alpha = 0.7, show.legend = FALSE) + 
+  scale_fill_manual(values=cols) + 
+  my_theme() + 
+  theme(
+    panel.border = element_blank(),
+    axis.line.x = AXIS_LINE,
+    axis.line.y = AXIS_LINE
+  ) +
+  labs(
+    y = paste0("% labeled by 13C-",name),
+    x = NULL
+  ) + theme() + coord_flip()
+}
+isotope_bargraph(
+  file = names(isotope_files)[1],
+  metabs = c("Fumarate m+2","Malate m+2","Aspartate m+2"), 
+  name= "Glc"
+)
+
+save_plot(
+   paste0(results_dir, "/barplots/glc_metabolites"),
+          width = 2, height = 0.85
+)
+
+```
+
+```{r, fig.width=2, fig.height=0.95}
+isotope_bargraph(
+  file = names(isotope_files)[2],
+  metabs = c("AKG m+5","Aspartate m+4","Citrate m+4", "Proline m+5", "Citrate m+5"), 
+  #glutamate, aKG, aspartate, citrate m+4, citrate m+5, proline m+5
+  name= "Gln"
+)
+
+save_plot(
+   paste0(results_dir, "/barplots/gln_metabolites"),
+          width = 2, height = 0.95
+)
+```
+
+
+```{r}
+print(isotope_data)
+isotope_data[c(
+  "Glucose-6P m+6",
+  "Fructose 1,6-biphosphate m+6",
+  "Glyceraldehyde-3P m+3",
+  "PEP m+3",
+  "Pyruvate",
+  "Citrate",
+  "Fumarate",
+  "Malate",
+  "Aspartate"
+), ]
+```
+
+
+```{r, fig.height=1.2, fig.width=2.05}
+pathways <- c(rep("tca", 6), "proline", "citrate")
+isotope_trace_plot(names(isotope_files)[2],
+                   width = 2.05 - 0.09,
+                   height = 1.2,
+                   split_rows = factor(pathways, levels = unique(pathways)),
+                   clstr_rows = FALSE,
+                   order = c(
+                     "Glutamate m+5",
+                     "ΑKG m+5",
+                     "Fumarate m+4",
+                     "Malate m+4",
+                     "Aspartate m+4",
+                     "Citrate m+4",
+                     "Proline m+5",
+                     "Citrate m+5"
+                   ))
+```
+
+
+
+```{r, fig.height=1.1, fig.width=1.25}
+processivity_analysis_heatmap <- function(df, height, width, out_filename){
+df %>% 
+  colnames() %>% 
+  lapply(str_split_i, pattern="_",i=1) %>% 
+  unlist() -> channel_conditions
+
+# condition labels
+ba <- HeatmapAnnotation(
+  foo = anno_block(
+    gp = gpar(
+      fill = isotope_cols, 
+      col = "transparent"), 
+    labels =  unique(channel_conditions),
+    labels_gp = gpar(col = "white", fontsize =6),
+    height=unit(3,"mm")))
+  
+df %>%
+  as.matrix() %>%
+  Heatmap(
+    top_annotation = ba,
+    cluster_rows = FALSE,
+    column_title = NULL,
+    row_names_gp = gpar(fontsize =5, fontfamily =FONT_FAMILY),
+    cluster_columns = FALSE,
+    column_split = channel_conditions,
+    show_column_names = FALSE,
+    row_names_side = "left",
+    column_gap = unit(0.25, "mm"),
+    rect_gp = gpar(col = "white", lwd = LINE_WIDTH),
+    heatmap_legend_param = list(
+                            grid_height = unit(0.2, "cm"), 
+                            title = expression("log"[2]*"(downstream/upstream metabolite)"),
+                            direction = "horizontal",
+                            title_gp =gpar(fontsize =5, fontfamily = FONT_FAMILY), 
+                            labels_gp = gpar(fontsize =5 ), fontfamily = FONT_FAMILY ),
+    col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+  ) -> ht
+
+pdf(
+  out_filename,
+  width = width, 
+  height = height
+)
+draw(ht, heatmap_legend_side = "bottom", legend_grouping = "original")
+dev.off()
+draw(ht, heatmap_legend_side = "bottom", legend_grouping = "original")
+}
+
+paste0(results_dir, "/heatmaps/processivity_analysis_formatted_HS.csv") %>%
+read_csv(show_col_types = FALSE) %>%
+column_to_rownames("metabolite_pair") -> df
+
+processivity_analysis_heatmap(
+  df = df,
+  height = 1.1,
+  width = 1.25,
+  out_filename = paste0(results_dir, "/heatmaps/processivity-analysis.pdf")
+)
+
+```
+
+```{r, fig.height=0.9, fig.width=1.25}
+paste0(results_dir, "/heatmaps/processivity_formatted_S3E.csv") %>%
+read_csv(show_col_types = FALSE) %>%
+column_to_rownames("metabolite_pair") -> df
+
+processivity_analysis_heatmap(
+  df = df,
+  height = 0.9,
+  width = 1.25,
+  out_filename = paste0(results_dir, "/heatmaps/processivity-analysis_S3E.pdf")
+)
+```
+
+
+

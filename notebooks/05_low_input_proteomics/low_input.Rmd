@@ -1,0 +1,1758 @@
+# Helper methods
+```{r}
+# set working directory to script location
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# load figure settings
+source("../../bin/figure_parameters.R")
+
+rc_dotplot <- function(df,targets,
+                       title,
+                       ratio_aspect = 1,
+                       ht = 4,
+                       wd = 2,
+                       y_max = 3.2,
+                       y_min = -3.2, 
+                       control_condition = "D2", 
+                       plot_dir = "/Users/henrysanford/dev/test_data/later_timepoints_reactivity/processed_results/dotplots/") {
+  plt_df <- df %>%
+    filter(condition == fil_condition) %>%
+    filter(protein %in% targets) %>%
+    mutate(
+      `Cysteine reactivity in D8C` = case_when(
+        reactivity_change != "true" ~ "Unchanged",
+        LFC_tmt_abpp > 0 ~ "Higher",
+        LFC_tmt_abpp < 0 ~ "Lower",
+        TRUE ~ "Unchanged"
+      ),
+      protein = factor(protein, levels = targets)
+    )
+  
+  lbl_data <- plt_df %>%
+    filter(reactivity_change == "true")
+  
+  wp_data <- plt_df %>% 
+    select(uniprot, protein, condition, LFC_WP) %>%
+    mutate(`Cysteine reactivity in D8C` = "Protein expression") %>% 
+    distinct()
+  
+  print(max(abs(plt_df$LFC_tmt_abpp)))
+  print(max(abs(plt_df$LFC_WP)))
+
+  plt_df %>%
+    arrange(by = "protein") %>%
+    ggplot(aes(x = protein, y = LFC_tmt_abpp, fill = `Cysteine reactivity in D8C`)) +
+    geom_hline(yintercept = c(1,-1),
+               linetype = "dashed",
+               size = LINE_WIDTH) +
+    # cysteine data
+    geom_point(
+      size = POINT_SIZE - 0.75,
+      shape = 21,
+      color = "black",
+      alpha = 0.9,
+      stroke = POINT_STROKE
+    ) +
+    # residue labels
+    geom_text(
+      data = lbl_data,
+      mapping = aes(
+        y = LFC_tmt_abpp + case_when(
+          LFC_tmt_abpp > 0 ~ lbl_nudge,
+          LFC_tmt_abpp < 0 ~ -lbl_nudge,
+          TRUE ~ lbl_nudge
+        ),
+        color = `Cysteine reactivity in D8C`,
+        label = residue
+      ),
+      size = FONT_SIZE,
+      size.unit = "pt",
+      show.legend = FALSE
+    ) +
+    # whole proteome data (triangle)
+    geom_point(
+      data = wp_data,
+      aes(x = protein, y = LFC_WP),
+      shape = 24,
+      color = "black",
+      size = POINT_SIZE - 0.75,
+      stroke = POINT_STROKE,
+      alpha = 0.9
+    ) +
+    # aesthetics
+    my_theme() +
+    scale_fill_manual(values = regulation_colors,
+                      breaks = names(regulation_colors)) +
+    scale_color_manual(values = regulation_colors,
+                       breaks = names(regulation_colors)) +
+    scale_y_continuous(breaks = round(y_min):round(y_max),
+                       limits = c(y_min, y_max)) +
+    guides(fill = guide_legend(byrow = TRUE,
+                               nrow = TRUE)) +
+    theme(
+      axis.text.x = element_text(
+        color = "black",
+        angle = 45,
+        size = FONT_SIZE,
+        family = "Arial",
+        vjust = 1,
+        hjust = 1
+      ),
+      legend.key.spacing.y = unit(-2.5, "mm"),
+      legend.margin = margin(b = -15),
+      legend.position = "top",
+      #aspect.ratio = ratio_aspect,
+      legend.title = element_text(margin = margin(b = -2)),
+      legend.key = element_blank(),
+      legend.title.position = "top",
+      legend.key.spacing = unit(0, "mm"),
+      legend.spacing.y = unit(-0, "mm"),
+      legend.spacing = unit(0, "mm")
+    ) +
+    labs(y = substitute(
+      paste('cysteine reactivity, log'[2],
+            "(", n, "/", m, ")"),
+      list(n = fil_condition, m = control_condition)
+    ),
+    x = "") +
+    guides(fill = guide_legend(ncol = 2, title = paste0("Cysteine reactivity in ", fil_condition))) -> plot
+  print(plot)
+  save_plot(
+    paste0(plot_dir, title),
+    height = ht,
+    width = wd
+  )
+  return(plt_df)
+}
+
+plot_loadings <- function(loadings_df, ggplot_obj, arrow_scaling, num_loadings = 5){
+  loadings_df %>% arrange(PC1) %>% tail(num_loadings) %>% pull(variable)-> top_pc1
+  loadings_df %>% arrange(PC1) %>% head(num_loadings) %>% pull(variable)-> bottom_pc1
+  loadings_df %>% arrange(PC2) %>% tail(num_loadings) %>% pull(variable)-> top_pc2
+  loadings_df %>% arrange(PC2) %>% head(num_loadings) %>% pull(variable)-> bottom_pc2
+  
+  loadings_df %>% filter(variable %in% c(top_pc1, bottom_pc1, bottom_pc2, top_pc2)) -> filtered_loadings
+  loadings <- ggplot_obj + geom_segment(data= filtered_loadings, 
+                      aes(x = 0, y = 0, 
+                          xend = PC1 * arrow_scaling, 
+                          yend = PC2 * arrow_scaling), 
+                      inherit.aes = FALSE,
+                    arrow = arrow(length = unit(0.1, "cm")),
+                    size = LINE_WIDTH,
+                    color="grey90") + 
+    geom_text(data= filtered_loadings,
+                    mapping = aes(label=variable,x=PC1*arrow_scaling, y=PC2*arrow_scaling), 
+                    inherit.aes = FALSE, 
+                    segment.size = LINE_WIDTH,
+                    min.segment.length = unit(0,"mm"),
+                    size=1.763, 
+                    color="black",
+                    #bg.color = "white",
+                    segment.color = "grey") 
+  return(loadings)
+}
+
+
+facetted_bargraph <- function(df, protein_list,shape_scale ,n_col = 5, facet_scales = "free_x", error_bars = TRUE, panel_spacing = 6){
+plt <- df %>%
+  filter(protein %in% protein_list) %>%
+  mutate(condition = factor(x = condition, levels = names(cols)), protein = factor(x = protein, levels = protein_list)) %>%
+  ggplot(aes(x = condition, y = percent_control, fill = condition)) + 
+  facet_wrap(~protein, ncol = n_col, scales = facet_scales) + 
+  scale_fill_manual(values = cols) + 
+      geom_bar(
+      stat = "summary",
+      fun = "mean",
+      width = 0.65,
+      color = "black",
+      alpha = 0.8,
+      size = LINE_WIDTH,
+      show.legend = FALSE
+    ) +
+  my_theme() + 
+    geom_beeswarm(
+      mapping = aes(shape = donor),
+      stroke = LINE_WIDTH,
+      corral.width = 1.5,
+      cex = 2,
+      alpha = 0.8,
+      size = 1,
+      #fill = "grey90",
+      color = "black",
+      show.legend = FALSE
+    ) +
+  theme(strip.background = element_blank(), strip.text = element_text(size = 6, color = "black", family = "Arial"), panel.spacing = unit(panel_spacing, "mm")) + 
+      theme(
+      axis.text.x = element_text(
+        size = FONT_SIZE,
+        color = "black",
+        family = "Arial",
+        angle = 45,
+        vjust = 1,
+        hjust = 1
+      )
+    ) +
+    geom_hline(yintercept = 100,
+               linetype = "dashed",
+               size = LINE_WIDTH) +
+    labs(x = NULL, y = "percent control") +
+    scale_shape_manual(values = shape_scale) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05)))
+
+
+if(error_bars){
+  plt <-   plt + stat_summary(fun.data = mean_se,geom = "errorbar",width = 0.3,size = LINE_WIDTH)
+}
+  return(plt)
+}
+
+facetted_rc_boxplot <-
+  function(proteins_to_plot,
+           fig_width,
+           fig_height,
+            cols, fills,
+           add_spacers = TRUE,
+           show_legend = TRUE, df = NULL, dir = bargraph_dir) {
+    df %>%
+      filter(protein %in% proteins_to_plot) %>%
+      mutate(
+        lfc = log2(percent_control / 100),
+        super_condition <-
+          str_split_fixed(condition, " + ", 2)[, 1]
+      ) %>%
+      select(protein,
+             residue,
+             residue_loc,
+             lfc,
+             condition) -> df
+    if(add_spacers){
+    # add invisible spacers separating conditions D2, D8A, D8C
+    for (plot_protein in proteins_to_plot) {
+      map <- setNames(unique(df %>% filter(protein == plot_protein) %>% pull(residue)),
+                      unique(df %>% filter(protein == plot_protein) %>% pull(residue_loc)))
+      for (residue_location in names(map)) {
+        for (spacer_num in c("spacer1", "spacer2")) {
+          df[nrow(df) + 1, ] = list(
+            "protein" = plot_protein,
+            "residue" = map[residue_location],
+            "residue_loc" = as.double(residue_location),
+            "lfc" = 0,
+            "condition" = spacer_num
+          )
+        }
+      }
+    }
+    }
+    
+    legend_breaks = names(fills)[!grepl("spacer", names(fills))]
+    df <- df %>% filter(!is.na(residue))
+    df %>%
+      mutate(condition = factor(df$condition, levels = names(cols))) %>%
+      arrange(condition) %>%
+      ggplot(aes(
+        x = reorder(residue, residue_loc),
+        y = lfc,
+        fill = condition,
+        color = condition
+        #shape = condition
+      )) +
+      geom_boxplot(
+        alpha = 0.9,
+        lwd = LINE_WIDTH,
+        outliers = FALSE,
+        show.legend = FALSE
+      ) +
+      geom_jitter(
+        size = POINT_SIZE - 1.5,
+        alpha = 0.9,
+        shape = 21,
+        stroke = POINT_STROKE,
+        show.legend = show_legend,
+        position = position_jitterdodge(jitter.width = 0.1)
+      ) +
+      labs(y = substitute(paste(
+        'cysteine reactivity, log'[2],
+        "(FC from D2)"
+      )),
+      x = "") +
+      guides(fill = element_blank()) +
+      my_theme() +
+      theme(
+        strip.background = element_blank(),
+        strip.text = element_text(
+          color = "black",
+          size = FONT_SIZE,
+          family = "Arial"
+        ),
+        plot.title = element_text(
+          size = 8,
+          color = "black",
+          family = "Arial",
+          hjust = 0.5
+        ),
+        legend.title = element_blank(),
+        legend.box.background = element_blank(),
+        legend.position = "top",
+        legend.key = element_blank(),
+        legend.margin = margin(b = -14, t = -10),
+        legend.key.spacing.y = unit(-3, "mm"),
+        legend.text = element_text(
+          size = 6,
+          color = "black",
+          family = "Arial",
+          margin = margin(l = -4)
+        ),
+        legend.key.spacing.x = unit(-1, "mm")
+      ) +
+      scale_fill_manual(values = fills, breaks = legend_breaks) +
+      scale_color_manual(values = cols, breaks = legend_breaks) +
+            geom_hline(yintercept = c(1, -1),
+                 linetype = "dashed",
+                 size = LINE_WIDTH) +
+      geom_vline(
+        xintercept = 1.5:length(unique(df$residue)),
+        size = LINE_WIDTH,
+        linetype = "dotted"
+      ) +
+      facet_grid( ~ protein, space = "free") -> plt
+    print(plt)
+    
+    save_plot(paste0(
+      dir,
+      paste(proteins_to_plot, collapse = "_")
+    ),
+    width = fig_width,
+    height = fig_height)
+    
+    return(df)
+  }
+
+pca_plot <- function(df,
+                     loadings_df,
+                     x_column,
+                     y_column,
+                     x_lab,
+                     y_lab,
+                     fn,
+                     arrow_scaling = 100,
+                     dir = bargraph_dir,
+                     use_shape = TRUE) {
+  
+  # Base aesthetics (always include fill and color)
+  if (use_shape) {
+    aes_mapping <- aes_string(
+      x = x_column,
+      y = y_column,
+      fill = "condition",
+      color = "condition",
+      shape = "donor"
+    )
+  } else {
+    aes_mapping <- aes_string(
+      x = x_column,
+      y = y_column,
+      fill = "condition",
+      color = "condition"
+    )
+  }
+  
+  df %>%
+    ggplot(aes_mapping) +
+    geom_point(
+      size = POINT_SIZE,
+      stroke = POINT_STROKE,
+      alpha = 0.7,
+      show.legend = TRUE,
+      shape = if (!use_shape) 21 else NULL  # Set shape to 21 if use_shape is FALSE
+    ) + 
+    my_theme() +
+    labs(x = x_lab, y = y_lab) +
+    scale_fill_manual(values = cols, name = "condition") +
+    scale_color_manual(values = cols, name = "condition") +
+    {if (use_shape) scale_shape_manual(values = shape_scale)} +  # Only add if use_shape is TRUE
+    theme(aspect.ratio = 1) +
+    theme(
+      legend.spacing.y = unit(0, "mm"),
+      legened.key.spacing = unit(-1, "mm"),
+      legend.key.height = unit(0.4, "cm"),
+      legend.box.spacing = unit(0, "mm"),
+      legend.margin = margin(l = 2),
+      legend.title = element_text(
+        size = 6,
+        color = "black",
+        family = "Arial",
+        margin = margin()
+      )
+    ) -> plt
+  print(plt)
+  save_plot(fn, height = 2, width = 4)
+  
+  plot_loadings(loadings_df, plt, arrow_scaling) -> plot_with_loadings
+  print(plot_with_loadings)
+  save_plot(paste0(fn, "_with_loadings"),
+            height = 2,
+            width = 4)
+}
+
+pca_plot <- function(df,
+                     loadings_df,
+                     x_column,
+                     y_column,
+                     x_lab,
+                     y_lab,
+                     fn,
+                     arrow_scaling = 100,
+                     dir = bargraph_dir,
+                     use_shape = TRUE) {
+  
+  # Base aesthetics (always include fill and color)
+  if (use_shape) {
+    aes_mapping <- aes_string(
+      x = x_column,
+      y = y_column,
+      fill = "condition",
+      color = "condition",
+      shape = "donor"
+    )
+    geom_point_args <- list(
+      size = POINT_SIZE,
+      stroke = POINT_STROKE,
+      alpha = 0.7,
+      show.legend = TRUE
+    )
+  } else {
+    aes_mapping <- aes_string(
+      x = x_column,
+      y = y_column,
+      fill = "condition",
+      color = "condition"
+    )
+    geom_point_args <- list(
+      size = POINT_SIZE,
+      stroke = POINT_STROKE,
+      alpha = 0.7,
+      show.legend = TRUE,
+      shape = 21
+    )
+  }
+  
+  df %>%
+    ggplot(aes_mapping) +
+    do.call(geom_point, geom_point_args) +
+    my_theme() +
+    labs(x = x_lab, y = y_lab) +
+    scale_fill_manual(values = cols, name = "condition") +
+    scale_color_manual(values = cols, name = "condition") +
+    {if (use_shape) scale_shape_manual(values = shape_scale)} +
+    theme(aspect.ratio = 1) +
+    theme(
+      legend.spacing.y = unit(0, "mm"),
+      legened.key.spacing = unit(-1, "mm"),
+      legend.key.height = unit(0.4, "cm"),
+      legend.box.spacing = unit(0, "mm"),
+      legend.margin = margin(l = 2),
+      legend.title = element_text(
+        size = 6,
+        color = "black",
+        family = "Arial",
+        margin = margin()
+      )
+    ) -> plt
+  print(plt)
+  save_plot(fn, height = 2, width = 4)
+  
+  plot_loadings(loadings_df, plt, arrow_scaling) -> plot_with_loadings
+  print(plot_with_loadings)
+  save_plot(paste0(fn, "_with_loadings"),
+            height = 2,
+            width = 4)
+}
+
+```
+
+# Inhibitor WP PCA
+```{r, fig.width = 4, fig.height=2}
+cols <- c(
+  "D2" = "#A1A1A1",
+  "D8A + DMSO" = "#603EA6",
+  "D8A + Thapsigargin" = "#8FB59D",
+  "D8C + DMSO" = "#E27753",
+  "D8C + BSJ" = "#4287A3",
+  "D8C + ISRIB" = "#A3425B",
+  "D8C + Thapsigargin" = "#3D7A54"
+)
+shape_scale <- c("d1" = 21,"d2" =  22,"d3" = 23,"d4" = 24)
+
+results_dir <- '/Users/henrysanford/dev/test_data/inhibitor_treatment/both_4_donors'
+#results_dir <- '/Users/henrysanford/dev/test_data/inhibitor_treatment/vardhana_2_donors'
+#results_dir <- '/Users/henrysanford/dev/test_data/inhibitor_treatment/vinogradova_2_donors'
+
+pca_dir <- paste0(results_dir, '/pca/')
+
+df <- read.csv(paste0(pca_dir, "pca_results.csv")) %>% 
+  mutate(
+    donor = str_split(channel_name, "_", n = 3) %>% map_chr(2), 
+    super_condition = condition %>% str_split(" ") %>% map_chr(1),
+    condition = factor(condition, levels = names(cols))
+    ) 
+
+
+read.csv(paste0(pca_dir, "loadings_results.csv")) -> loadings_df
+expl <- read_csv(paste0(pca_dir, "percent_explained.csv")) %>% pull(percent_explained)
+pca_plot(
+  df,
+  loadings_df,
+  "principal.component.1",
+  "principal.component.2",
+  paste0("PC1 (", expl[[1]], "%)"),
+  paste0("PC2 (", expl[[2]], "%)"),
+  paste0(pca_dir, "pca"),
+  arrow_scaling = 125,
+  use_shape = FALSE
+)
+df
+```
+
+
+
+
+
+
+
+```{r, fig.height=3, fig.width=6}
+tp_list <- c(
+    "PDCD1",
+    "LAG3",
+    "TIGIT",
+    "HAVCR2",
+    "CD39",
+    "NR4A1",
+    "NR4A3",
+    "GZMB",
+    "GSR",
+    "CD62L",
+    "NFATC1",
+    "BHLHE40",
+    "PRKCH",
+    "PRKCQ",
+    "SAMHD1",
+    "CTLA4"
+)
+
+highglight_list <- c("PDCD1",
+"LAG3",
+"CTLA4",
+"TIGIT",
+"GZMB",
+"NR4A1",
+"NR4A3",
+"NFATC1",
+"PRKCH",
+"PRKCQ")
+
+df <- paste0(results_dir, "/bargraphs/long_percent_control.csv") %>%
+  read_csv(show_col_types = FALSE)  
+facetted_bargraph(df, highglight_list, shape_scale = c(21,21,21,21))
+
+save_plot(
+  fn = paste0(results_dir, "/bargraphs/selected_proteins"),
+  height = 3, width = 6
+)
+```
+
+```{r, fig.width=4.05, fig.height=2.15}
+df <- paste0(results_dir, "/bargraphs/long_percent_control.csv") %>%
+  read_csv(show_col_types = FALSE)  %>%
+  filter(condition != "D8C + Gossypetin")
+facetted_bargraph(df, c("TCF7", "TOX", "TBX21", "IFNG", "IL2", "TNFA"), c(21, 21, 21, 21), n_col = 5, facet_scales = "free", error_bars = TRUE)
+
+save_plot(
+  fn = paste0(results_dir, "/bargraphs/selected_proteins"),
+  height = 2.15, width = 4.05
+)
+```
+
+### Inhibitor bargraphs
+
+```{r, fig.width=4.05, fig.height=2.15}
+df <- paste0(results_dir, "/bargraphs/long_percent_control.csv") %>%
+  read_csv(show_col_types = FALSE)  %>%
+  filter(condition != "D8C + Gossypetin")
+facetted_bargraph(df, c("LAG3", "PDCD1", "GZMB"), c(21, 21, 21, 21), n_col = 5, facet_scales = "free", error_bars = TRUE)
+
+save_plot(
+  fn = paste0(results_dir, "/bargraphs/selected_proteins"),
+  height = 2.15, width = 4.05
+)
+```
+
+```{r, fig.width=2.6, fig.height=2.15}
+df <- paste0(results_dir, "/bargraphs/long_percent_control.csv") %>%
+  read_csv(show_col_types = FALSE)  %>%
+  filter(condition != "D8C + Gossypetin")
+facetted_bargraph(df, c("GZMB", "NR4A3"), c(21, 21, 21, 21))
+
+save_plot(
+  fn = paste0(results_dir, "/bargraphs/selected_proteins"),
+  height = 2.15, width = 2.6
+)
+```
+
+```{r, fig.width=4.35, fig.height=2.15}
+df <- paste0(results_dir, "/bargraphs/long_percent_control.csv") %>%
+  read_csv(show_col_types = FALSE)  %>%
+  filter(condition != "D8C + Gossypetin")
+facetted_bargraph(df, c("NR4A3", "CTLA4", "NFATC1","EGR2"), c(21, 21, 21, 21), n_col = 5, facet_scales = "free", error_bars = TRUE, panel_spacing = 1)
+
+save_plot(
+  fn = paste0(results_dir, "/bargraphs/selected_proteins"),
+  height = 2.15, width = 4.35
+)
+```
+
+
+# ATF GSEA
+
+
+```{r, fig.height=3, fig.width = 2}
+
+df <- paste0(results_dir, "/gsea/gsea_results.csv") %>%
+  read_csv(show_col_types = FALSE) %>%
+  mutate(comparison = paste(treatment_condition, "vs", control_condition)) %>%
+  filter(Term %in% c(
+    "ATF6_01_binding_motif", "ATF4_Q2_binding_motifs"
+  )) %>%
+  mutate(Term = case_when(
+    Term == "ATF6_01_binding_motif" ~ "ATF6 binding motifs",
+    Term == "ATF4_Q2_binding_motifs" ~ "ATF4 binding motifs",
+    TRUE ~ Term
+  )) %>%
+  mutate(comparison = str_replace(comparison, " vs ", " / "))
+sig_comparisons <- df %>%
+  filter(`FDR q-val` < 0.05) %>%
+  pull(comparison)
+df <- df %>%
+  #filter(comparison %in% sig_comparisons) %>%
+  dplyr::select(`FDR q-val`, `NES`, Term, comparison) %>%
+  arrange(NES) 
+df %>%
+  ggplot(aes(x = NES, y = reorder(comparison, NES), fill = -log10(`FDR q-val`))) +
+  geom_col(width = 0.5, color = "black", size = LINE_WIDTH) + 
+  geom_vline(xintercept = 0,size = LINE_WIDTH) +
+  facet_wrap(~Term, ncol =1) + my_theme() + 
+  labs(y = NULL) + theme(strip.text = element_text(size = 6)) + 
+  scale_fill_continuous(low = "#B3CDE3", high = "#B10F7C", breaks = c(0.75, 1.25, 1.75)) + 
+      labs(
+         y = NULL,
+         fill = expression("-log"[10] * "(FDR)")) +
+    theme(
+      axis.text.y = element_text(size = 6, family = FONT_FAMILY),
+      legend.text = element_text(margin = margin(l = 1)),
+      legend.key.height = unit(4, "mm"),
+      legend.key.width = unit(4, "mm"),
+      strip.clip = "off",
+      panel.grid.major = element_line(color = "grey90", size = LINE_WIDTH),
+      legend.position = "bottom",
+      legend.margin = margin(0, 0, -10, -10),
+      strip.background = element_blank()
+    ) +
+  scale_x_continuous(expand = expansion(mult = c(0.2, 0.2)))
+
+save_plot(paste0(results_dir, "/gsea/gsea_dot_plot"), height = 3, width = 2)
+```
+
+
+
+
+
+
+### Inhibitor bargraphs
+```{r, fig.height=2, fig.width=6}
+
+facetted_bargraph <- function(df, protein_list, shape_scale, n_col = 5){
+  dodge_width <- 0.8  # Define consistent dodge width
+  
+  plt <- df %>%
+    filter(protein %in% protein_list) %>%
+    mutate(condition = factor(x = condition, levels = names(cols))) %>%
+    arrange(residue_loc) %>%
+    mutate(residue = factor(x = residue, levels = unique(residue))) %>%
+    ggplot(aes(x = residue, y = percent_control, fill = condition)) + 
+    facet_wrap(~protein, ncol = n_col, scales = "free_x") + 
+    scale_fill_manual(values = cols) + 
+    geom_bar(
+      stat = "summary",
+      fun = "mean",
+      width = dodge_width,
+      color = "black",
+      alpha = 0.8,
+      size = LINE_WIDTH,
+      show.legend = FALSE,
+      position = position_dodge(width = dodge_width)
+    ) +
+    my_theme() + 
+    stat_summary(
+      fun.data = mean_se,
+      geom = "errorbar",
+      width = 0.3,
+      size = LINE_WIDTH,
+      position = position_dodge(width = dodge_width)
+    ) +
+    geom_beeswarm(
+      stroke = LINE_WIDTH,
+      corral.width = 1, 
+      shape =21,
+      cex = 1,
+      alpha = 0.8,
+      size = 1,
+      color = "black",
+      show.legend = FALSE,
+      dodge.width = dodge_width  
+    ) +
+    theme(
+      strip.background = element_blank(), 
+      strip.text = element_text(size = 6, color = "black", family = "Arial"), 
+      panel.spacing = unit(6, "mm"),
+      panel.border = element_blank(),
+      axis.line.x = AXIS_LINE,
+      axis.line.y = AXIS_LINE
+    ) + 
+    geom_hline(
+      yintercept = 100,
+      linetype = "dashed",
+      size = LINE_WIDTH
+    ) +
+    labs(x = NULL, y = "cysteine reactivity (%D2)") +
+    scale_shape_manual(values = shape_scale) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05)))
+  
+  return(plt)
+}
+
+facetted_bargraph(df %>% filter(control_condition == "D2"), c("MAP2K3","MAP2K4"), c(21, 21, 21, 21))
+
+ggsave(
+  paste0(data_dir, "map2k_all_residues.svg"),
+  height = 2,
+  width = 6
+)
+```
+
+
+```{r, fig.width=1.4, fig.height=2.15}
+
+facetted_bargraph <- function(df, protein_list, shape_scale, n_col = 5){
+  dodge_width <- 0.8  # Define consistent dodge width
+  
+  plt <- df %>%
+    filter(name %in% protein_list) %>%
+    mutate(condition = factor(x = condition, levels = names(cols))) %>%
+    arrange(residue_loc) %>%
+    mutate(residue = factor(x = residue, levels = unique(residue))) %>%
+    mutate(name = factor(x = name, levels = protein_list)) %>%
+    ggplot(aes(x = condition, y = percent_control, fill = condition)) + 
+    facet_wrap(~name, ncol = n_col, scales = "free_x") + 
+    scale_fill_manual(values = cols) + 
+    geom_bar(
+      stat = "summary",
+      fun = "mean",
+      width = 0.65,
+      color = "black",
+      alpha = 0.8,
+      size = LINE_WIDTH,
+      show.legend = FALSE,
+      #position = position_dodge(width = dodge_width)
+    ) +
+    my_theme() + 
+    stat_summary(
+      fun.data = mean_se,
+      geom = "errorbar",
+      width = 0.3,
+      size = LINE_WIDTH,
+      #position = position_dodge(width = dodge_width)
+    ) +
+    geom_beeswarm(
+      stroke = LINE_WIDTH,
+      corral.width = 1, 
+      shape =21,
+      cex = 1,
+      alpha = 0.8,
+      size = 1,
+      color = "black",
+      show.legend = FALSE,
+      #dodge.width = dodge_width  
+    ) +
+    theme(
+      strip.background = element_blank(), 
+      strip.text = element_text(size = 6, color = "black", family = "Arial"), 
+      panel.spacing = unit(6, "mm"),
+      #panel.border = element_blank(),
+      #axis.line.x = AXIS_LINE,
+      #axis.line.y = AXIS_LINE
+    ) + 
+          theme(
+      axis.text.x = element_text(
+        size = FONT_SIZE,
+        color = "black",
+        family = "Arial",
+        angle = 45,
+        vjust = 1,
+        hjust = 1
+      )
+    ) +
+    geom_hline(
+      yintercept = 100,
+      linetype = "dashed",
+      size = LINE_WIDTH
+    ) +
+    labs(x = NULL, y = "cysteine reactivity (%D2)") +
+    scale_shape_manual(values = shape_scale) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05)))
+  
+  return(plt)
+}
+
+facetted_bargraph(df %>% filter(control_condition == "D2") %>% mutate(name = paste(protein, residue)), c("MAP2K4 C246"), c(21, 21, 21, 21))
+
+ggsave(
+  paste0(data_dir, "map2k_.svg"),
+  height = 2.15,
+  width = 1.4
+)
+```
+
+### Non-unique peptide
+
+```{r, fig.width=2.25, fig.height=2.15}
+cysteine_name <- "MAP2K3 C207 / MAP2K6 C196"
+map2k4_cysteine <- "MAP2K4 C246"
+one_peptide_df <- paste0(data_dir, "KMCDFGISGYLVDSVAKT.csv") %>%
+  read_csv(show_col_types = FALSE) %>%
+  mutate(name = cysteine_name, residue_loc = 207, residue = c("207")) %>%
+  select(-c("SEQUENCE"))
+
+map2k4_df <- df %>%
+  filter(control_condition == "D2") %>%
+  mutate(name = paste(protein, residue)) %>%
+  filter(name == c(map2k4_cysteine)) %>%
+  select(colnames(one_peptide_df))
+
+rbind(map2k4_df, one_peptide_df) %>%
+  facetted_bargraph(
+    protein_list = c(map2k4_cysteine, cysteine_name),
+    shape_scale = c(21,21,21,21)
+  )
+
+ggsave(filename = paste0(data_dir, "map2k_cystienes.svg"),width = 2.25, height = 2.15 )
+```
+
+
+# Mouse WP data
+
+## PCA
+
+```{r, fig.width=4, fig.height=2}
+cols <- c(
+  "Mouse D2 CD8" = "#A1A1A1",
+  "Mouse D8A CD8" = "#603EA6",
+  "Mouse D8C CD8" = "#E27753",
+  "D8 Armstrong" = "#8b8bbc",
+  "D8 Clone 13" = "#f7931e",
+  "D15 Clone 13" =  "#EF3D3B",
+  "TILs" = "#e8a0a7",
+  "Splenic T cells" = "#a54d5b"
+)
+
+pca_dir <- '/Users/henrysanford/dev/test_data/texh_revisions/mouse_wp/output/pca/in_vivo/'
+
+df <- read.csv(paste0(pca_dir, "pca_results.csv")) %>% mutate(donor = str_split(channel_name, "_", n = 3) %>% map_chr(2))
+
+read.csv(paste0(pca_dir, "loadings_results.csv")) |> mutate(variable = toupper(variable)) -> loadings_df
+
+expl <- read_csv(paste0(pca_dir, "percent_explained.csv")) %>% pull(percent_explained)
+pca_plot(
+  df,
+  loadings_df,
+  "principal.component.1",
+  "principal.component.2",
+  paste0("PC1 (", expl[[1]], "%)"),
+  paste0("PC2 (", expl[[2]], "%)"),
+  paste0(pca_dir, "pca"),
+  arrow_scaling = 200,
+  use_shape = FALSE
+)
+
+```
+
+
+
+## Bargraphs
+
+```{r, fig.width=4.5, fig.height=3}
+bargraph_dir <- '/Users/henrysanford/dev/test_data/texh_revisions/mouse_wp/output/bargraphs/'
+
+df <- paste0(bargraph_dir, "long_percent_control.csv") %>%
+  read_csv(show_col_types = FALSE)
+protein_list <- c("PDCD1","LAG3","CTLA4","TIGIT","GZMB","NR4A1","NR4A3","NFATC1","PRKCH","PRKCQ")
+
+mouse_protein_list <-  c("Pdcd1","Lag3","Ctla4","Tigit","Gzmb","Nr4a1","Nr4a3","Nfatc1","Prkch","Prkcq")
+facetted_bargraph(df, mouse_protein_list, shape_scale = c(21), n_col = 3)
+
+save_plot(
+  fn = paste0(bargraph_dir, "selected_proteins"),
+  height = 3, width = 4.5
+)
+```
+
+
+```{r, fig.width=4.2, fig.height=2.15}
+
+mouse_protein_list <-  c("Pdcd1","Lag3","Havcr2")
+facetted_bargraph(df, mouse_protein_list, shape_scale = c(21), n_col = 3, error_bars = FALSE,  facet_scales = "free", panel_spacing = 2)
+
+save_plot(
+  fn = paste0(bargraph_dir, "selected_proteins"),
+  height = 2.15, width = 4.2
+)
+
+```
+
+
+## Volcano plots
+
+```{r, fig.width=2, fig.height=4}
+
+group_hierarchy_redox <- function(df){
+  df %>%
+    mutate(group = 
+           case_when(
+             nucleotide_metabolism ~ "Nucelotide metabolism",
+             redox_related ~ "Redox related",
+             cell_cycle ~ "Cell cycle",
+             TRUE ~ "Other"
+           )) %>% 
+    return()
+}
+group_hierarchy_etc <- function(df){
+  df %>%
+    mutate(group = 
+           case_when(
+             respiratory_complex_v ~ "Respiratory_complex_V",
+             `respiratory_complex_i-iv` ~ "Respiratory_complex_I_IV",
+             mitochondrial ~ "Mitochondrial",
+             TRUE ~ "Other"
+           )) %>% 
+    mutate(group = factor(group,levels = rev(names(color_code)))) %>%
+    arrange(group) %>%
+    return()
+}
+group_hierarchy_peroxisome <- function(df){
+  df %>%
+    mutate(group = 
+           case_when(
+             peroxisome ~ "Peroxisome",
+             TRUE ~ "Other"
+           )) %>% 
+    mutate(group = factor(group,levels = rev(names(color_code)))) %>%
+    arrange(group) %>%
+    return()
+}
+
+# read volcano data
+df <- "/Users/henrysanford/dev/test_data/texh_revisions/mouse_wp/output/long_volcano_df.csv" %>%
+  read_csv(show_col_types = FALSE) %>%
+  mutate(comparison = paste0(condition, " vs. ",control_condition))
+all_comparisons <- unique(df$comparison)
+
+
+# redox volcano plot
+df <- group_hierarchy_redox(df) %>% mutate(log10_pval = `-log10_pval`)
+color_code <- c(
+  "Nucelotide metabolism" = "#bade28",
+  "Redox related" = "#440154",
+  "Cell cycle" = "#21918c",
+  "Other" = 'gray88'
+)
+volcano_dir <- "/Users/henrysanford/dev/test_data/texh_revisions/mouse_wp/output/"
+row = c(group = "Multiple groups")
+run_all_comparisons(
+  df, row, all_comparisons, color_code, c("Gpx1","Gpx4","Gsr","Sod2","Selenow", "Cdk4","Cdk6","Cdkn2a","Cdc25c","Chek2","Entpd1","Cd38","Ak4","Nt5dc2")
+)
+
+
+color_code <- c(
+  "Respiratory_complex_V" = "#bade28",
+  "Respiratory_complex_I_IV" = "#440154",
+  "Mitochondrial" = "#21918c",
+  "Other" = 'gray88'
+)
+df <- group_hierarchy_etc(df) %>% mutate(log10_pval = `-log10_pval`)
+row = c(group = "Complex_I-V")
+
+
+run_all_comparisons(
+  df, row, all_comparisons, color_code, c("a")
+)
+
+color_code <- c(
+  "Peroxisome" = "#21918c",
+  "Other" = 'gray88'
+)
+
+
+
+df <- group_hierarchy_peroxisome(df) %>% mutate(log10_pval = `-log10_pval`)
+row = c(group = "Peroxisome")
+run_all_comparisons(
+  df, row, all_comparisons, color_code, c("a")
+)
+```
+
+### GSEA of PC loadings
+
+```{r, fig.width=3.5, fig.height=4}
+pca_dir <- "/Users/henrysanford/dev/test_data/texh_revisions/mouse_wp/output/pca/"
+clean_term <- function(term) {
+  str_split_fixed(term, "_", 2)[2] -> term
+  #gsub("\\b([a-z])", "\\U\\1", tolower(term), perl=TRUE) -> term
+  str_replace_all(term, "_", " ") -> term
+  str_wrap(term, 40) -> term
+  return(term)
+}
+
+replot_pca <- function(pca_dir){
+ for (pc in c("PC1", "PC2")) {
+  paste0(pca_dir, pc,
+         "/gseapy.gene_set.prerank.report.csv") %>%
+    read_csv(show_col_types = FALSE) %>%
+    mutate(
+      Term = lapply(Term, FUN = clean_term) %>% unlist(),
+      `-log10(FDR)` = -log10(`FDR q-val`)
+    ) %>%
+    arrange(abs(NES)) -> df
+  
+  max_score  <- max(df$`-log10(FDR)`[is.finite(df$`-log10(FDR)`)], na.rm = TRUE)
+  df$`-log10(FDR)`[is.infinite(df$`-log10(FDR)`)] <- 5.5
+  
+  # color palette
+  down_df <- df %>%
+    filter(`FDR q-val` < 0.01) %>%
+    filter(NES  < 0) |> 
+    tail(10)
+  up_df <- df |> 
+    filter(`FDR q-val` < 0.01) %>%
+    filter(NES  > 0) |> 
+    tail(10) 
+  down_df |>  rbind(up_df) |> 
+    ggplot(aes(
+      x = NES,
+      y = reorder(Term, NES),
+      fill = `-log10(FDR)`
+    )) +
+    geom_col(color = "black",
+             size = LINE_WIDTH,
+             width = 0.5) +
+    my_theme() +
+    geom_vline(xintercept = 0,
+               color = "black",
+               size = LINE_WIDTH) +
+    labs(x = paste0(pc, " NES"),
+         y = NULL,
+         fill = expression("-log"[10] * "(FDR)")) +
+    theme(
+      axis.text.y = element_text(size = 5, family = FONT_FAMILY),
+      legend.text = element_text(margin = margin(l = 1)),
+      legend.key.height = unit(4, "mm"),
+      legend.key.width = unit(4, "mm"),
+      #panel.border = element_blank(),
+      panel.grid.major = element_line(color = "grey90", size = LINE_WIDTH),
+    ) + 
+      #scale_fill_distiller(palette = "BuPu", direction = 1) -> plt
+    scale_fill_continuous(low = "#B3CDE3", high = "#B10F7C", limits = c(1.5, 5.5)) -> plt
+  print(plt)
+  save_plot(
+    paste0(pca_dir, pc, "/top_enriched_sets"),
+    width = 3.5,
+    height = 4
+  )
+} 
+}
+
+replot_pca(pca_dir)
+
+```
+
+```{r}
+# in vivo only
+pca_dir <- "/Users/henrysanford/dev/test_data/texh_revisions/mouse_wp/output/pca/in_vivo/"
+replot_pca(pca_dir)
+
+```
+
+
+
+# Human vs Mouse
+
+### Dot plot
+
+```{r, fig.height=4.5, fig.width=2}
+data_dir <- "/Users/henrysanford/dev/test_data/texh_revisions/mouse_wp/output/"
+proteins_of_interest <- c("BATF","CTLA4","CXCL13","EGR2","ENTPD1","GZMB","HAVCR2","IL7R","IRF4","LAG3","NFATC1","NR4A1","TBX21","TCF7","TNFRSF9","BHLHE40", "IFNG", "IL2", "TNF", "TIGIT", "TOX", "PDCD1", "CD38", "HLA-DRA","HLA-DRB1","HLA-DRB3", "CD244", "NT5E", "NR4A3", "NFKB2","LTB","BATF","CTLA4","TNFRSF9","EGR2","CD200","TNFRSF4")
+df <- data_dir |> 
+paste0("combined_long_volcano_data.csv") |> 
+  read_csv(show_col_types = FALSE) |> 
+  filter(
+    # only show comparisons to D2
+    control_condition %in% c("D2", "Mouse D2 CD8"),
+    # proteins to plot
+    human %in% proteins_of_interest
+    ) |> 
+  mutate(dataset = case_when(
+    dataset == "human" ~ "human\nin vitro",
+    condition %in% c("Mouse D8A CD8","Mouse D8C CD8" ) ~ "mouse\nin vitro",
+    TRUE ~ "mouse\nin vivo"
+  ))   |> group_by(human) |>
+  #filter(n_distinct(dataset) == n_distinct(df$dataset)) |>
+  ungroup() |> 
+  mutate(condition = factor(condition, levels = c("D8A", "D8C", "Mouse D8A CD8", "Mouse D8C CD8", "D8 Armstrong", "D8 Clone 13", "D15 Clone 13", "TILs"))) |> 
+    # temporary fix because the orthology database is too broad
+  filter(!(`mouse, laboratory` %in% c("Gzma","Gzmc","Gzmd","Gzme","Gzmf","Gzmg" )))
+  
+protein_order <- df |> filter(condition == "D8C") |> arrange(log2_FC) |> pull(human) |> unique()
+
+df |> 
+  mutate(human = factor(human, levels = c("PDCD1",protein_order))) |> 
+  ggplot(aes(x = condition, y = human, size = -log10(p_value), fill = log2_FC)) +
+  geom_point(shape =21, stroke = LINE_WIDTH) + 
+  facet_grid(cols = vars(dataset), scales = "free_x", space = "free") + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", limits = c(-3, 3), oob = scales::squish) + 
+  my_theme() + 
+      theme(
+      strip.background = element_blank(), 
+      strip.text = element_text(size = 6, color = "black", family = "Arial"), 
+      panel.spacing = unit(0, "mm"),
+      panel.grid.major = element_line(color = "grey90", size = LINE_WIDTH)
+    ) + 
+          theme(
+      axis.text.x = element_text(
+        size = FONT_SIZE,
+        color = "black",
+        family = "Arial",
+        angle = 45,
+        vjust = 1,
+        hjust = 1
+      ),
+      legend.position = "bottom",
+      legend.direction = "horizontal",
+      legend.box = "vertical"
+    )  +
+  labs(x = NULL, y = NULL, size = expression("-log"[10]*"(p-value)"), fill = expression("-log"[2]*"(FC from mouse or human D2)")) +
+      guides(
+      fill = guide_colorbar(
+        barwidth = 4,
+        barheight = 0.6,
+        title.position = "top",
+        title.hjust = 0.5,
+        order =1
+      ),
+      size = guide_legend(
+        direction = "horizontal",
+        title.position = "top",
+        title.hjust = 0.5,
+        nrow = 1,
+        order =2
+      )
+    ) +
+  scale_size_continuous(range = c(0.5, 4)) 
+df |> mutate(human = factor(human, levels = unique(protein_order)))
+ggsave(
+  paste0(data_dir, "mouse_vs_human_dot_plot.svg"),
+  height = 4.5, 
+  width = 2
+)
+```
+
+
+```{r, fig.width=4, fig.height=2}
+
+input_dir <- '/Users/henrysanford/Dropbox @RU Dropbox/Vinogradova Laboratory/Exhaustion manuscript/01_RNA-sequencing/13524/'
+paste0(
+  input_dir, "gsea_enrichment_curve/chronic_activation_score/input/GMDF.gmx"
+) %>% 
+  read_csv(show_col_types = FALSE,skip = 1) %>% 
+  pull("> Genes unregulated in exhausted T-cells from Aviv Regev") -> exhaustion_markers_43
+
+
+human_control <- "D2"
+human_condition <- "D8C"
+mouse_control <- "Mouse D2 CD8"
+mouse_condition <- "Mouse D8C CD8"
+df <- data_dir |> 
+paste0("combined_long_volcano_data.csv") |> 
+  read_csv(show_col_types = FALSE) |> 
+  filter(
+    (control_condition ==human_control & condition == human_condition) | (control_condition ==mouse_control & condition == mouse_condition),
+    #human %in% proteins_of_interest
+    ) |> 
+  drop_na(human) |> 
+  select(human, condition, control_condition, log2_FC,  dataset, peroxisome, cell_cycle) |> 
+  select(-c(condition, control_condition)) |> 
+  rename(protein = human) |> 
+  pivot_wider(
+    id_cols = c(protein, peroxisome, cell_cycle), 
+    names_from = dataset,
+    values_from = log2_FC,
+      values_fn = first
+  ) |> drop_na() |> 
+  mutate(exhausiton_marker = protein %in% exhaustion_markers_43) |> 
+  mutate(exhausiton_marker= factor(exhausiton_marker, levels = c(TRUE, FALSE)))
+lbl_df <- df |> filter(protein %in% proteins_of_interest)
+
+df |> 
+  arrange(desc(exhausiton_marker)) |> 
+  ggplot(
+    aes(x = human, y = mouse, fill = exhausiton_marker, label = protein)
+  ) + 
+  geom_point(shape = 21, alpha = 0.5, stroke = LINE_WIDTH, size = 1) + 
+  my_theme() +
+  theme(aspect.ratio = 1) + 
+  geom_text_repel(data = lbl_df, size = FONT_SIZE_MM, min.segment.length = 0, nudge_y = 1, segment.size = LINE_WIDTH) + 
+  scale_fill_manual(values = c("#21918c", "grey90"))
+
+
+exhaustion_markers_43
+```
+
+
+# Human TIL data
+
+```{r}
+cols <- c(
+'Human D0 CD3' = "lightgrey",
+ 'Human D2 CD3' = "#A1A1A1",
+ 'Human D8A CD3' = "#603EA6",
+ 'Human D8C CD3' = "#E27753",
+ 'TIL 1' = "#ac6468",
+ 'TIL 2' = "#a74245",
+ 'TIL 3' = "#d39e9c",
+'TIL 4' = "#7a2e31", 
+ 'TIL 5' = "#e8c4c3"
+)
+```
+
+### PCA
+
+```{r, fig.width=4, fig.height=2}
+
+data_dir <- "/Users/henrysanford/dev/test_data/texh_revisions/new_human_til/output/"
+pca_dir <- paste0(data_dir, 'pca/')
+
+df <- read.csv(paste0(pca_dir, "pca_results.csv")) %>% mutate(donor = str_split(channel_name, "_", n = 3) %>% map_chr(2))
+
+read.csv(paste0(pca_dir, "loadings_results.csv")) -> loadings_df
+
+expl <- read_csv(paste0(pca_dir, "percent_explained.csv")) %>% pull(percent_explained)
+pca_plot(
+  df,
+  loadings_df,
+  "principal.component.1",
+  "principal.component.2",
+  paste0("PC1 (", expl[[1]], "%)"),
+  paste0("PC2 (", expl[[2]], "%)"),
+  paste0(pca_dir, "pca"),
+  arrow_scaling = 150,
+  use_shape = FALSE
+)
+
+
+```
+
+```{r}
+replot_pca("/Users/henrysanford/dev/test_data/texh_revisions/new_human_til/output/pca/")
+```
+
+```{r}
+replot_pca("/Users/henrysanford/dev/test_data/texh_revisions/new_human_til/output/pca/in_vivo/")
+```
+
+
+
+```{r, fig.width = 4, fig.height=2}
+
+plot_loadings <- function(loadings_df, ggplot_obj, arrow_scaling, num_loadings = 5){
+  loadings_df %>% arrange(PC1) %>% tail(num_loadings) %>% pull(variable)-> top_pc1
+  loadings_df %>% arrange(PC1) %>% head(num_loadings) %>% pull(variable)-> bottom_pc1
+  loadings_df %>% arrange(PC3) %>% tail(num_loadings) %>% pull(variable)-> top_pc2
+  loadings_df %>% arrange(PC3) %>% head(num_loadings) %>% pull(variable)-> bottom_pc2
+  
+  loadings_df %>% filter(variable %in% c(top_pc1, bottom_pc1, bottom_pc2, top_pc2)) -> filtered_loadings
+  loadings <- ggplot_obj + geom_segment(data= filtered_loadings, 
+                      aes(x = 0, y = 0, 
+                          xend = PC1 * arrow_scaling, 
+                          yend = PC3 * arrow_scaling), 
+                      inherit.aes = FALSE,
+                    arrow = arrow(length = unit(0.1, "cm")),
+                    size = LINE_WIDTH,
+                    color="grey90") + 
+    geom_text(data= filtered_loadings,
+                    mapping = aes(label=variable,x=PC1*arrow_scaling, y=PC3*arrow_scaling), 
+                    inherit.aes = FALSE, 
+                    segment.size = LINE_WIDTH,
+                    min.segment.length = unit(0,"mm"),
+                    size=1.763, 
+                    color="black",
+                    #bg.color = "white",
+                    segment.color = "grey") 
+  return(loadings)
+}
+
+pca_plot <- function(df,
+                     loadings_df,
+                     x_column,
+                     y_column,
+                     x_lab,
+                     y_lab,
+                     fn,
+                     arrow_scaling = 100,
+                     dir = bargraph_dir,
+                     use_shape = TRUE) {
+  
+  # Base aesthetics (always include fill and color)
+  if (use_shape) {
+    aes_mapping <- aes_string(
+      x = x_column,
+      y = y_column,
+      fill = "condition",
+      color = "condition",
+      shape = "donor"
+    )
+  } else {
+    aes_mapping <- aes_string(
+      x = x_column,
+      y = y_column,
+      fill = "condition",
+      color = "condition"
+    )
+  }
+  
+  df %>%
+    ggplot(aes_mapping) +
+    geom_point(
+      size = POINT_SIZE,
+      stroke = POINT_STROKE,
+      alpha = 0.7,
+      show.legend = TRUE,
+      shape = if (!use_shape) 21 else NULL  # Set shape to 21 if use_shape is FALSE
+    ) + 
+    my_theme() +
+    labs(x = x_lab, y = y_lab) +
+    scale_fill_manual(values = fills, name = "condition") +
+    scale_color_manual(values = cols, name = "condition") +
+    {if (use_shape) scale_shape_manual(values = shape_scale)} +  # Only add if use_shape is TRUE
+    theme(aspect.ratio = 1) +
+    theme(
+      legend.spacing.y = unit(0, "mm"),
+      legened.key.spacing = unit(-1, "mm"),
+      legend.key.height = unit(0.4, "cm"),
+      legend.box.spacing = unit(0, "mm"),
+      legend.margin = margin(l = 2),
+      legend.title = element_text(
+        size = 6,
+        color = "black",
+        family = "Arial",
+        margin = margin()
+      )
+    ) -> plt
+  print(plt)
+  save_plot(fn, height = 2, width = 4)
+  
+  plot_loadings(loadings_df, plt, arrow_scaling) -> plot_with_loadings
+  print(plot_with_loadings)
+  save_plot(paste0(fn, "_with_loadings"),
+            height = 2,
+            width = 4)
+}
+
+cols <- c(
+'Human D0 CD3' = "black",
+ 'Human D2 CD3' = "#A1A1A1",
+ 'Human D8A CD3' = "#603EA6",
+ 'Human D8C CD3' = "#E27753",
+ 'TIL 1' = "#ac6468",
+ 'TIL 2' = "#a74245",
+ 'TIL 3' = "#d39e9c",
+'TIL 4' = "#7a2e31", 
+ 'TIL 5' = "#e8c4c3"
+)
+
+fills <- c(
+'Human D0 CD3' = "transparent",
+ 'Human D2 CD3' = "#A1A1A1",
+ 'Human D8A CD3' = "#603EA6",
+ 'Human D8C CD3' = "#E27753",
+ 'TIL 1' = "#ac6468",
+ 'TIL 2' = "#a74245",
+ 'TIL 3' = "#d39e9c",
+'TIL 4' = "#7a2e31", 
+ 'TIL 5' = "#e8c4c3"
+)
+
+
+pca_plot(
+  df |> mutate(condition = factor(condition, levels  = names(cols))),
+  loadings_df,
+  "principal.component.1",
+  "principal.component.3",
+  paste0("PC1 (", expl[[1]], "%)"),
+  paste0("PC3 (", expl[[3]], "%)"),
+  paste0(pca_dir, "pca"),
+  arrow_scaling = 175,
+  use_shape = FALSE
+)
+```
+
+
+
+### Bargraphs
+
+```{r, fig.width=4.2, fig.height=2.15}
+bargraph_dir <- paste0(data_dir, 'bargraphs/')
+
+df <- paste0(bargraph_dir, "long_percent_control.csv") %>%
+  read_csv(show_col_types = FALSE)
+protein_list <- unique(c("PDCD1","LAG3","CTLA4","TIGIT","GZMB","NR4A1","NR4A3","NFATC1","ENTPD1","HAVCR2","BHLHE40","CTLA4","TNFRSF9","EGR2","CXCL13","TIGIT"," TOX","TCF7"))
+
+facetted_bargraph(df, protein_list, n_col = 3, shape_scale = c(21, 22))
+
+save_plot(
+  fn = paste0(bargraph_dir, "selected_proteins"),
+  height = 3.5, width = 4
+)
+```
+
+```{r, fig.width=3.2, fig.height=2.15}
+
+
+bargraph_dir <- paste0(data_dir, 'bargraphs/')
+
+df <- paste0(bargraph_dir, "long_percent_control.csv") %>%
+  read_csv(show_col_types = FALSE)
+protein_list <- unique(c("LAG3","GZMB"))
+
+facetted_bargraph(df, protein_list, n_col = 3, shape_scale = c(21, 21), facet_scales = "free")
+
+save_plot(
+  fn = paste0(bargraph_dir, "lag3_gzmb"),
+  height = 2.15, width = 3.2
+)
+```
+
+```{r, fig.width=1.2, fig.height=2.15}
+protein_list <- unique(c("PDCD1"))
+
+facetted_bargraph(df, protein_list, n_col = 3, shape_scale = c(21, 22), facet_scales = "free", error_bars = FALSE, )
+
+save_plot(
+  fn = paste0(bargraph_dir, "pdcd1"),
+  height = 2.15, width = 1.2
+)
+
+```
+
+
+### Volcano plot
+
+```{r}
+
+nudge_x = 0.7
+make_condition_plot_multi <- function(row, 
+                                condition, 
+                                volcano_data, 
+                                control_condition, 
+                                color_code,
+                                highlight_proteins = c(), 
+                                highlight_color = '#440154'){
+  x_var <- paste0("log2_FC")
+  y_var <- paste0("log10_pval")
+  change_var = paste0("Regulation")
+  name_var = "protein"
+  group <- row["group"]
+  
+  change_var = paste0("Regulation")
+  y_max <- max(abs(volcano_data$`-log10_pval`)) * 1.2
+  x_max <- max(abs(volcano_data$log2_FC)) * 1.5
+  nudge_x <- 2
+  # build label dataframe
+  labels <- list()
+  y <- y_max * (15.5/16)
+  x <- x_max * (4.7/5.3)
+  print(names(color_code))
+  for (direction in c("Significant Up", "Significant Down")){
+   for (bio_group in names(color_code)){
+      volcano_data[volcano_data[[change_var]] == direction &
+                           volcano_data[["group"]] == bio_group,] %>% 
+       nrow() -> protein_count
+     r <- c("direction" = direction,
+            "bio_group" = bio_group, 
+            "count" = protein_count, 
+            "x" = x,
+            "y" = y)
+     labels[[paste0(bio_group, direction)]] <- r
+     y <- y - (y_max * (1.5/16))
+   }
+    y <- y_max * (15.5/16)
+    x <- x * -1
+  }
+  
+  do.call("rbind", labels) %>% as.data.frame() -> count_label_df
+  title <- paste0(control_condition," vs ", condition)
+  
+  alphas_binary <- c(0.4,0.9)
+  
+  sig <- volcano_data[ volcano_data[[change_var]] %in% c("Significant Up", "Significant Down") , ]
+  
+  volcano_data %>% mutate(significant = uniprot %in% sig$uniprot) -> volcano_data
+  sig$significant <- TRUE
+  label_data <- sig[ sig[[name_var]] %in% highlight_proteins , ]
+  set.seed(12345)
+  volcano_data %>%
+    arrange(group) %>%
+    ggplot(aes_string(x=x_var,
+               y=y_var,
+                fill = "group",
+               alpha = "significant")) +
+    geom_point(data = volcano_data %>% filter(group == "Other"), 
+               size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black") +
+    geom_point(data = volcano_data %>% filter(group != "Other"),
+              size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black") +
+    geom_point(data = label_data,
+              size = 1,
+               shape=21,
+               stroke=POINT_STROKE / 2,
+               col="black") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", size=LINE_WIDTH) +
+    geom_vline(xintercept = c(-FC_CUTOFF, FC_CUTOFF), linetype = "dashed", size=LINE_WIDTH) +
+    geom_text_repel(
+      data = label_data[label_data[[change_var]] == "Significant Down",],
+      aes_string(x = x_var,
+      y = y_var,
+      color = "group",
+      # label with gene name instead of uniprot
+      label = name_var),
+      direction    = "both",
+      #color = "black",
+      box.padding = 1,
+      nudge_x = -nudge_x,
+      xlim = c(NA, -1),
+      size =FONT_SIZE_MM,
+      #bg.color = "white",
+      min.segment.length = 0,
+      segment.size = LINE_WIDTH,
+      inherit.aes = FALSE,
+      show.legend = FALSE) +
+    geom_text_repel(
+      data = label_data[label_data[[change_var]] == "Significant Up",],
+      aes_string(x = x_var,
+      y = y_var,
+      color = "group",
+      # label with gene name instead of uniprot
+      label = name_var),
+      direction    = "both",
+      #color = "black",
+      box.padding = 1,
+      nudge_x = nudge_x,
+      xlim = c(1,NA),
+      size = FONT_SIZE_MM,
+      #bg.color = "white",
+      min.segment.length = 0,
+      segment.size = LINE_WIDTH,
+      inherit.aes = FALSE,
+      show.legend = FALSE) +
+  geom_label(
+    data = count_label_df,
+    mapping = aes(x = as.numeric(x), 
+                  y = as.numeric(y), 
+                  label = count, 
+                  fill = bio_group),
+    color = "white", 
+    size=6,
+    size.unit="pt",
+    show.legend = FALSE,
+    inherit.aes = FALSE) +
+    theme_test() +
+    labs(
+      x = substitute(paste('protein expression, log'[2], "(", n, '/', m, ")"), list(n = condition, m = control_condition)),
+      y = substitute(paste('-log'[10], '(p-value)'))
+    ) +
+    scale_fill_manual(values=color_code) +
+        scale_color_manual(values=color_code) +
+    scale_alpha_manual(values = alphas_binary, guide="none") +
+    my_theme() +
+  theme(strip.text.x = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      legend.title=element_blank(),
+      legend.box.background = element_blank(),
+      legend.position = "top",
+      legend.justification.top = "top",
+      legend.justification = "center",
+      legend.box.just = "center",
+      aspect.ratio=1,
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -0.8),
+      legend.key.spacing.y = unit(-0.9, "cm"),
+      legend.key.spacing.x = unit(-0.05, "cm")) + 
+    guides(fill = guide_legend(ncol = 2, 
+                               )) +
+    ylim(0,y_max) +
+    xlim(-x_max,x_max) -> v_plot
+  print(v_plot)
+  
+  save_plot(paste0(volcano_dir, "functional_groups_highlighted/", group, "/", title), width=2, height=4)
+}
+
+run_all_comparisons <- function(df, row, all_comparisons, color_code, highlight_proteins){
+  for (comp in all_comparisons){
+  print(comp)
+  condition <- comp %>% str_split(" vs. ") %>% map_chr(1) 
+  control <- comp %>% str_split(" vs. ") %>% map_chr(2) 
+  
+  make_condition_plot_multi(
+    row, 
+    condition, 
+    df %>% filter(comparison == comp),
+    control, 
+    color_code = color_code,
+    highlight_proteins = c("ayo"), 
+    highlight_color = "#440154")
+}
+}
+
+volcano_dir <- paste0(data_dir, "volcano_plots/")
+# read volcano data
+df <- paste0(data_dir, "long_volcano_df.csv") %>%
+  read_csv(show_col_types = FALSE) %>%
+  mutate(comparison = paste0(condition, " vs. ",control_condition))
+
+max_finite <- max(df$log2_FC[is.finite(df$log2_FC)])
+min_finite <- min(df$log2_FC[is.finite(df$log2_FC)])
+
+df$log2_FC[df$log2_FC == Inf]  <- max_finite
+df$log2_FC[df$log2_FC == -Inf] <- min_finite
+
+all_comparisons <- unique(df$comparison)
+
+
+# redox volcano plot
+df <- group_hierarchy_redox(df) %>% mutate(log10_pval = `-log10_pval`)
+color_code <- c(
+  "Nucelotide metabolism" = "#bade28",
+  "Redox related" = "#440154",
+  "Cell cycle" = "#21918c",
+  "Other" = 'gray88'
+)
+row = c(group = "Multiple groups")
+run_all_comparisons(
+  df, row, all_comparisons, color_code, c("GPX1","GPX4","GSR","SOD2","SELENOW", "CDK4","CDK6","CDKN2A","CDC25C","CHEK2","ENTPD1","CD38","AK4","NT5DC2")
+)
+
+# etc volcano plot
+color_code <- c(
+  "Respiratory_complex_V" = "#bade28",
+  "Respiratory_complex_I_IV" = "#440154",
+  "Mitochondrial" = "#21918c",
+  "Other" = 'gray88'
+)
+df <- group_hierarchy_etc(df) %>% mutate(log10_pval = `-log10_pval`)
+row = c(group = "Complex_I-V")
+
+
+run_all_comparisons(
+  df, row, all_comparisons, color_code, c("a")
+)
+
+color_code <- c(
+  "Peroxisome" = "#21918c",
+  "Other" = 'gray88'
+)
+
+
+
+df <- group_hierarchy_peroxisome(df) %>% mutate(log10_pval = `-log10_pval`)
+row = c(group = "Peroxisome")
+run_all_comparisons(
+  df, row, all_comparisons, color_code, c("a")
+)
+
+
+
+```
+
+```{r}
+df |> filter(log2_FC == max_finite) |> pull(protein) |> unique() |> paste(collapse = " ")
+```
+
+
+# T-cell expression plots
+
+bar graph showing expression changes for CSNK2A1, CSNK2A2, and CSNK2B (D2, D8A, D8C);
+bar graph showing expression changes for MAF1 (D2, D8A, D8C);
+Reactivity change for BRF2_C370 in acute and chronic conditions;
+
+```{r, fig.width=2.3, fig.height=2}
+wp_percent_control_df <- '/Users/henrysanford/Dropbox @RU Dropbox/Vinogradova Laboratory/Exhaustion manuscript/02_Mass-spectrometry data/01_whole_proteome/02_wp_analysis/20240821_6rep_2MC_two_replicate_var_filter/03_combined_files/20240821_6rep_2MC_two_replicate_var_filter/02_combfiles_percctrl_wp.csv'
+
+results_dir <- '/Users/henrysanford/Dropbox @RU Dropbox/Vinogradova Laboratory/Exhaustion manuscript/02_Mass-spectrometry data/01_whole_proteome/02_wp_analysis/20240821_6rep_2MC_two_replicate_var_filter/04_results/addl_bargraphs/'
+
+cols <-c(
+  "D2" = "#A1A1A1", 
+  "D4A" = "#ABA2D6", 
+  "D8A" = "#603EA6", 
+  "D4C" = "#FBB31B", 
+  "D8C" = "#E27753"
+)
+
+preprocess_wp_file <- function(filepath){
+  df <- filepath |> 
+  read_csv(show_col_types = FALSE) |> 
+  select(-contains("pepNum")) |> 
+  select(-c("...1")) |> 
+  pivot_longer(cols = contains("processed"), values_to = "percent_control") |> 
+  separate_wider_delim(
+    col = name,
+    delim = "_",
+    names = c("condition","donor", "technical_replicate"),
+    too_many = "drop"
+  )
+  
+  return(df)
+}
+
+original_wp_bargraph <- function(list_proteins){
+# format wp data for plotting
+plt <-  wp_percent_control_df|> 
+  preprocess_wp_file() |> 
+  filter(condition %in% c("D2","D8A","D8C")) |> 
+  facetted_bargraph(protein_list = list_proteins, shape_scale = rep(21, 6)) + 
+  labs(x = NULL, y = "protein expression (%D2)") + 
+  theme(axis.text.x = element_text(size = FONT_SIZE, family = FONT_FAMILY, color = "black", angle = 0, hjust = 0.5, vjust = NULL), panel.spacing = unit(1, "mm"), panel.border = element_blank(), axis.line.x = AXIS_LINE, axis.line.y = AXIS_LINE)
+  print(plt)
+  return(plt)
+}
+original_wp_bargraph(c("CSNK2A1", "CSNK2A2", "CSNK2B"))
+
+ggsave(paste0(results_dir, "CNSK_bargraph.svg"), height = 2, width = 2.3)
+
+```
+
+```{r, fig.height=2, fig.width=1.1}
+original_wp_bargraph(c("MAF1"))
+ggsave(paste0(results_dir,"MAF1_bargraph.svg"), height = 2, width = 1.1)
+
+```

@@ -1,0 +1,1787 @@
+---
+title: "exhaustion_reactivity"
+author: "Henry Sanford"
+date: "2024-07-09"
+output: html_document
+---
+
+## Setup
+
+```{r, results}
+# set working directory to script location
+
+# load figure settings
+source("../../bin/figure_utils.R")
+
+results_dir <- "../../data/reactivity/results"
+
+protein_list_dir <- "/Users/henrysanford/Dropbox @RU Dropbox/Vinogradova Laboratory/Exhaustion manuscript/02_Mass-spectrometry data/Reference lists/"
+
+add_back_dir <- "../data/reactivity/atp_add_back"
+
+```
+
+## Waterfall plots
+
+```{r, fig.height=3, fig.width=2}
+reactivity_rank_dir <- paste0(results_dir,"02_cysteine_reactivity_rank/")
+for (condition in conditions){
+  paste0(reactivity_rank_dir,condition,"_cysteine_reactivity_rank.csv") -> fn
+  read_csv(fn, show_col_types = FALSE) -> df
+  df %>% mutate(residue_rank = rank(-LFC_tmt_abpp)) %>% 
+    mutate(`Cysteine reactivity in D8C` = case_when(LFC_tmt_abpp > 1 ~ "Higher",
+                                LFC_tmt_abpp < -1 ~ "Lower",
+                                TRUE ~ "Unchanged")) %>%  
+    mutate(name = paste0(protein, "_", residue))-> df
+  df %>% write_csv(fn)
+  
+  df %>% filter(protein %in% 
+                  c("PIP5K1B", 
+                    "PIP5K1A", 
+                    "PIP5K1C",
+                    "PIP4K2A",
+                    "PIP4K2B",
+                    "PIP4K2C",
+                    "PIK3CB",
+                    "PIP4P1",
+                    "PLCB1",
+                    "INPP5E",
+                    "PTEN"
+                    )) -> label_data
+  
+  df %>% ggplot(aes(x=residue_rank, y = LFC_tmt_abpp, color = `Cysteine reactivity in D8C`)) + 
+    geom_point(aes(fill= `Cysteine reactivity in D8C`), 
+               size=POINT_SIZE - 1, 
+               shape=21, 
+               color = "transparent",
+                stroke=POINT_STROKE / 4,
+               show.legend = FALSE) + 
+    geom_hline(yintercept = c(1,-1), linetype="dashed", size=LINE_WIDTH, color = "black") + 
+    labs(
+      x = "residue rank",
+      y = substitute(paste('cysteine reactivity, log'[2],
+                           "(",n, "/D2)"), list(n = condition))
+    ) +
+    geom_text_repel(data = label_data, 
+                     size=FONT_SIZE_MM,
+                     aes(label=name), 
+                    color = "black",
+                     min.segment.length = unit(0, 'lines'), 
+                    segment.size = LINE_WIDTH,
+                     box.padding = 1,
+                     show.legend = FALSE,
+                     family="Arial") + 
+    geom_point(data=label_data, stroke=POINT_STROKE, shape=21, color="black", size=POINT_SIZE - 1,
+               show.legend = FALSE) +
+    scale_fill_manual(values = regulation_colors, name = paste0("Cysteine reactivity in ", condition)) + 
+    ylim(-4.5,6) +
+    my_theme() + 
+    theme(legend.position = "top",
+      legend.box.background = element_blank(),
+      aspect.ratio=1,
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -5.7),
+      legend.key.spacing.y = unit(-1, "cm"),
+      legend.key.spacing.x = unit(-0.05, "cm"))-> plot
+  print(plot)
+  save_plot(paste0(reactivity_rank_dir, condition, "_cysteine_reactivity_rank"), width = 4, height = 2)
+}
+```
+
+
+## WP RC one peptide scatterplot
+
+```{r, fig.width=2, fig.height=2}
+plot_lim = 3.8 + 0.07
+nudge_val = 2
+reactivity_vs_wp_dir <- paste0(results_dir, "03_reactivity_vs_wp")
+line_df <- data.frame(x1 = c(-plot_lim, -plot_lim + 1), 
+                      x2 = c(plot_lim - 1, plot_lim), 
+                      y1 = c(-plot_lim + 1, -plot_lim), 
+                      y2 = c(plot_lim, plot_lim - 1))
+
+one_peptide_scatterplot <- function(fil_condition, highlights){
+  
+  paste0(reactivity_vs_wp_dir, "/",fil_condition, "_D2_reactivity_wp_comparison_data.csv") %>%
+  read_csv(show_col_types = FALSE) -> full_df
+  
+  full_df %>% mutate(
+    cysteine_reactivity_regulation = case_when(
+      ((tmt_abpp / whole_proteome) < 0.5) ~ "Lower",
+      ((tmt_abpp / whole_proteome) > 2) ~ "Higher",
+      TRUE ~ "Unchanged"
+    )
+  ) %>% 
+    mutate(LFC_wp = log2(whole_proteome / 100)) %>% 
+    filter(is.finite(LFC_wp)) %>%
+    filter(num_quantified_peptides == 1) %>%
+    filter(condition == fil_condition)  -> full_df
+  
+  full_df %>% 
+    mutate(name = paste0(protein, "_", residue)) -> df
+  
+  full_df %>% write_csv(
+    paste0(reactivity_vs_wp_dir, "/",fil_condition, "_D2_reactivity_wp_comparison_data_1_peptide.csv")
+  )
+  
+  df %>% 
+    filter(protein %in% highlights) -> label_data
+  
+  df %>% 
+    ggplot(aes(x=LFC_tmt_abpp, 
+               y=LFC_wp, 
+               fill=cysteine_reactivity_regulation)) + 
+    geom_point(
+               color="black" ,
+               size = 1,
+               stroke=POINT_STROKE / 2,
+               shape=21, 
+               alpha=0.6,
+               show.legend = FALSE) + 
+    geom_point(data=label_data, 
+               color="black" ,
+               size = 1,
+               stroke=POINT_STROKE / 2,
+               shape=21, 
+               show.legend = FALSE) + 
+    scale_fill_manual(values = regulation_colors) +
+    scale_x_continuous(breaks = c(-4,-3,-2,-1,0,1,2,3,4),
+                       limits = c(-plot_lim, plot_lim),
+                       expand = c(0,0)) +
+    scale_y_continuous(breaks = c(-4,-3,-2,-1,0,1,2,3,4),
+                       limits = c(-plot_lim, plot_lim),
+                       expand = c(0,0)) +
+   geom_text_repel(data = label_data %>% filter(cysteine_reactivity_regulation == "Lower"), 
+                     aes(label=name, color = cysteine_reactivity_regulation), 
+                     size=FONT_SIZE_MM,
+                    segment.size = LINE_WIDTH,
+                     min.segment.length = unit(0, 'lines'), 
+                     nudge_y=nudge_val, 
+                   ylim = c(0, NA),
+                     show.legend = FALSE) + 
+    geom_text_repel(data = label_data %>% filter(cysteine_reactivity_regulation == "Higher"), 
+                     aes(label=name, color = cysteine_reactivity_regulation), 
+                     size=FONT_SIZE_MM,
+                    segment.size = LINE_WIDTH,
+                     min.segment.length = unit(0, 'lines'), 
+                     nudge_y=-nudge_val, 
+                   ylim = c(NA, 0),
+                     show.legend = FALSE) + 
+    scale_color_manual(values = regulation_colors) +
+    labs(
+      x = substitute(paste('cysteine reactivity, log'[2],
+                           "(",n, "/D2)"), list(n = fil_condition)),
+      y = substitute(paste('protein expression, log'[2],
+                           "(",n, "/D2)"), list(n = fil_condition)),
+    ) +
+    geom_segment(data = line_df,
+      aes(x = x1, y = y1, 
+          xend = x2, yend = y2),
+      inherit.aes = FALSE,
+      linetype = "dashed",
+      size = LINE_WIDTH,
+      color = "black") +
+    my_theme() +
+    theme(aspect.ratio=1, 
+          legend.key.spacing.y = unit(-2,"mm"),
+          legend.key = element_blank(),)-> plot
+    print(plot)
+    save_plot(
+      paste0(results_dir, 
+             "03_reactivity_vs_wp/", 
+             fil_condition,"_D2_scatter"), 
+      width=2, height=2)
+}
+
+
+one_peptide_scatterplot(
+  "D8C",
+  c("HTRA2","RAB39B","PYCARD","TFRC","SDCBP","NDUFB7","TIMM10")
+)
+
+one_peptide_scatterplot(
+  "D8A",
+  c("HTRA2","RAB39B","TFRC")
+)
+
+for(condition in c("D4A", "D4C")){
+ one_peptide_scatterplot(
+  condition,
+  c()) 
+}
+```
+
+## Reactivity change dotplots
+
+```{r, fig.height = 4, fig.width=2}
+lbl_nudge <- 0.4
+
+fil_condition <- "D8C"
+rc_dotplot <- function(targets,
+                       title,
+                       ratio_aspect = 1,
+                       ht = 4,
+                       wd = 2,
+                       y_max = 3,
+                       y_min = -3) {
+  plt_df <- paste0(reactivity_vs_wp_dir, "/rc_df_long_format.csv") %>%
+    read.csv() %>%
+    filter(condition == fil_condition) %>%
+    filter(protein %in% targets) %>%
+    mutate(
+      `Cysteine reactivity in D8C` = case_when(
+        reactivity_change != "True" ~ "Unchanged",
+        LFC_tmt_abpp > 0 ~ "Higher",
+        LFC_tmt_abpp < 0 ~ "Lower",
+        TRUE ~ "Unchanged"
+      ),
+      protein = factor(protein, levels = targets)
+    )
+  
+  lbl_data <- plt_df %>%
+    filter(reactivity_change == "True")
+  
+  wp_data <- plt_df %>% 
+    select(uniprot, protein, condition, LFC_WP) %>%
+    mutate(`Cysteine reactivity in D8C` = "Protein expression") %>% 
+    distinct()
+
+  plt_df %>%
+    arrange(by = "protein") %>%
+    ggplot(aes(x = protein, y = LFC_tmt_abpp, fill = `Cysteine reactivity in D8C`)) +
+    geom_hline(yintercept = c(1,-1),
+               linetype = "dashed",
+               size = LINE_WIDTH) +
+    # cysteine data
+    geom_point(
+      size = POINT_SIZE - 0.75,
+      shape = 21,
+      color = "black",
+      alpha = 0.9,
+      stroke = POINT_STROKE
+    ) +
+    # residue labels
+    geom_text(
+      data = lbl_data,
+      mapping = aes(
+        y = LFC_tmt_abpp + case_when(
+          LFC_tmt_abpp > 0 ~ lbl_nudge,
+          LFC_tmt_abpp < 0 ~ -lbl_nudge,
+          TRUE ~ lbl_nudge
+        ),
+        color = `Cysteine reactivity in D8C`,
+        label = residue
+      ),
+      size = FONT_SIZE,
+      size.unit = "pt",
+      show.legend = FALSE
+    ) +
+    # whole proteome data (triangle)
+    geom_point(
+      data = wp_data,
+      aes(x = protein, y = LFC_WP),
+      shape = 24,
+      color = "black",
+      size = POINT_SIZE - 0.75,
+      stroke = POINT_STROKE,
+      alpha = 0.9
+    ) +
+    # aesthetics
+    my_theme() +
+    scale_fill_manual(values = regulation_colors,
+                      breaks = names(regulation_colors)) +
+    scale_color_manual(values = regulation_colors,
+                       breaks = names(regulation_colors)) +
+    scale_y_continuous(breaks = round(y_min):round(y_max),
+                       limits = c(y_min, y_max)) +
+    guides(fill = guide_legend(byrow = TRUE,
+                               nrow = TRUE)) +
+    theme(
+      axis.text.x = element_text(
+        color = "black",
+        angle = 45,
+        size = FONT_SIZE,
+        family = "Arial",
+        vjust = 1,
+        hjust = 1
+      ),
+      legend.key.spacing.y = unit(-2.5, "mm"),
+      legend.margin = margin(b = -15),
+      legend.position = "top",
+      #aspect.ratio = ratio_aspect,
+      legend.title = element_text(margin = margin(b = -2)),
+      legend.key = element_blank(),
+      legend.title.position = "top",
+      legend.key.spacing = unit(0, "mm"),
+      legend.spacing.y = unit(-0, "mm"),
+      legend.spacing = unit(0, "mm")
+    ) +
+    labs(y = substitute(
+      paste('cysteine reactivity, log'[2],
+            "(", n, "/D2)"),
+      list(n = fil_condition)
+    ),
+    x = "") +
+    guides(fill = guide_legend(ncol = 2)) -> plot
+  print(plot)
+  save_plot(
+    paste0(results_dir, "06_dotplots/", title),
+    height = ht,
+    width = wd
+  )
+}
+```
+
+
+
+
+### Multiple pathways
+
+```{r, fig.height=2.63, fig.width=4.6}
+rc_dotplot(
+  c(
+    "CDC123",
+    "TUFM", 
+    "TLN1", 
+    "LIMA1", 
+    "PLS3",
+    "AGPS", 
+    "ACSL4",
+    "SACS", 
+    "BAG5",
+    "DNAJC11", 
+    "LONP1", 
+    "HSPA9", 
+    "HSPH1",
+    "GFER",
+    "NDUFV1",
+    "MAP2K3",
+    "MAP2K4"
+    ),
+  "S3D D8C vs D2",
+  ratio_aspect = 0.5,
+  wd = 4.6,
+  ht = 2.63,
+  y_min = -3,
+  y_max = 3.5
+)
+```
+
+
+```{r, fig.width = 2.88, fig.height = 2.6861}
+facetted_multi_condition_dotplot <-
+  function(targets,
+           display_conditions,
+           title,
+           additional_cysteines_to_label = c(),
+           fig_height,
+           fig_width,
+           y_min = -4.5,
+           y_max = 2) {
+    paste0(reactivity_vs_wp_dir, "/rc_df_long_format.csv") %>% 
+      read_csv(show_col_types = FALSE) %>%
+      filter(protein %in% targets,
+             condition %in% display_conditions) %>%
+      mutate(`PPAT reactivity in D8C` = case_when(
+        (reactivity_change == TRUE) & (LFC_tmt_abpp > 0) ~ "Higher",
+        (reactivity_change == TRUE) & (LFC_tmt_abpp < 0) ~ "Lower",
+        TRUE ~ "Unchanged"
+      ),
+      condition = factor(condition, levels = names(cols)),
+      protein = factor(protein, levels = targets)) -> plt_df
+    
+    plt_df %>%
+      filter(reactivity_change == TRUE |
+               residue %in% additional_cysteines_to_label) -> lbl_data
+    
+    plt_df %>% select(uniprot, protein, condition, LFC_WP) %>% 
+      mutate(`PPAT reactivity in D8C` = "Protein expression") %>%
+      distinct() -> wp_data
+    
+    plt_df$protein <- factor(plt_df$protein, levels = targets)
+    plt_df %>%
+      ggplot(aes(x = condition, y = LFC_tmt_abpp, fill = `PPAT reactivity in D8C`)) +
+      geom_hline(yintercept =c(-1, 1),
+                 linetype = "dashed",
+                 size = LINE_WIDTH) +
+      # cysteine data
+      geom_point(
+        size = POINT_SIZE - 0.75,
+        shape = 21,
+        color = "black",
+        alpha = 0.9,
+        stroke = POINT_STROKE
+      ) +
+      # residue labels
+      geom_text(
+        data = lbl_data,
+        mapping = aes(
+          y = LFC_tmt_abpp + case_when(LFC_tmt_abpp > 0 ~ 0.5,
+                                       LFC_tmt_abpp < 0 ~ -0.5,
+                                       TRUE ~ 0.5),
+          color = `PPAT reactivity in D8C`,
+          label = residue
+        ),
+        size = FONT_SIZE,
+        size.unit = "pt",
+        show.legend = FALSE
+      ) +
+      # whole proteome data (triangle)
+      geom_point(
+        data = wp_data,
+        aes(x = condition, y = LFC_WP),
+        shape = 24,
+        color = "black",
+        size = POINT_SIZE - 0.75,
+        stroke = POINT_STROKE,
+        alpha = 0.9
+      ) +
+      # aesthetics
+      my_theme() +
+      scale_fill_manual(values = regulation_colors,
+                        breaks = names(regulation_colors)) +
+      scale_color_manual(values = regulation_colors,
+                         breaks = names(regulation_colors)) +
+      scale_y_continuous(breaks = round(y_min):round(y_max),
+                         limits = c(y_min, y_max)) +
+      theme(
+        legend.key.spacing.y = unit(-2.5, "mm"),
+        legend.margin = margin(b = -15),
+        legend.position = "top",
+        strip.text = element_text(
+          family = FONT_FAMILY,
+          color = "black",
+          size = FONT_SIZE,
+          margin = margin(t = 0)
+        ),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        panel.spacing = unit(0, "mm"),
+        legend.title = element_text(margin = margin(b = -2)),
+        legend.key = element_blank(),
+        legend.title.position = "top",
+        legend.key.spacing = unit(0, "mm"),
+        legend.spacing.y = unit(-0, "mm"),
+        legend.spacing = unit(0, "mm")
+      ) +
+      labs(y = substitute(
+        paste('cysteine reactivity, log'[2], "(FC from D2)"),
+        list(n = fil_condition)
+      ),
+      x = NULL,
+      fill = NULL) +
+      facet_wrap( ~ protein, ncol = 5, strip.position = "bottom") +
+      guides(fill = guide_legend(ncol = 2)) -> plot
+    print(plot)
+    save_plot(
+      paste0(results_dir, "06_dotplots/", title),
+      height = fig_height,
+      width = fig_width
+    )
+  }
+```
+
+### P53 pathway
+
+```{r, fig.height=2.185, fig.width=2.88}
+facetted_multi_condition_dotplot(
+  targets = c("DCAF15", "DHCR24","NAP1L1", "NOC2L","FAM111B"),
+  display_conditions = c("D4C", "D8C"),
+  title = "p53_proteins",
+  additional_cysteines_to_label = c("C91", "C511", "C50"),
+  fig_height = 2.335 - 0.15,
+  fig_width = 2.88
+)
+```
+
+
+### PPAT and CDKN1B
+```{r, fig.width=1, fig.height=2.2}
+facetted_multi_condition_dotplot(
+  targets = c("PPAT"),
+  display_conditions = c("D8A","D4A","D4C", "D8C"),
+  title = "PPAT",
+  additional_cysteines_to_label = c("C306"),
+  fig_height = 2.2,
+  fig_width = 1.4,
+  y_min = -2.5,
+  y_max = 1.5
+)
+
+facetted_multi_condition_dotplot(
+  targets = c("CDKN1B"),
+  display_conditions = c("D8A", "D8C"),
+  title = "CDKN1B",
+  additional_cysteines_to_label = c("C29","C148" ),
+  fig_height = 2.2,
+  fig_width = 1,
+  y_min = -1.1, 
+  y_max = 1.7
+)
+```
+
+
+
+```{r}
+multi_condition_rc_plot <- function(proteins,
+                                    ht = 2.5,
+                                    wd = 2,
+                                    rotate_x_labels = TRUE,
+                                    brk_size = 100) {
+  paste0(reactivity_vs_wp_dir,
+         "/reactivity_wp_comparison_data.csv") %>%
+    read.csv() %>%
+    filter(protein %in% proteins) %>%
+    mutate(residue_loc = 
+             str_split_fixed(
+               str_split_fixed(residue, "C", 2)[, 2], ";", 2)[, 1] %>% 
+             as.numeric()) -> map2k_df
+  
+  map2k_df %>% filter(tmt_abpp > 200) -> label_data
+  
+  max_tmt <- max(map2k_df$tmt_abpp)
+  map2k_df %>%
+    filter(tmt_abpp < 200) %>%
+    ggplot(aes(x = reorder(residue, residue_loc), y = tmt_abpp)) +
+    theme_minimal() +
+    geom_hline(
+      yintercept = 100,
+      linetype = "solid",
+      size = LINE_WIDTH,
+      color = "black"
+    ) +
+    geom_hline(
+      yintercept = 200,
+      linetype =  "dotted",
+      size = LINE_WIDTH,
+      color = "black"
+    ) +
+    ylab("cysteine reactivity (%D2)") +
+    xlab("") +
+    geom_beeswarm(
+      size = POINT_SIZE - 0.5,
+      shape = 21,
+      col = "black",
+      show.legend = FALSE,
+      fill = "lightgrey",
+      width = 0.05,
+      height = 0,
+      stroke = POINT_STROKE,
+      alpha = 0.7
+    ) +
+    geom_text(
+      data = label_data,
+      mapping = aes(
+        x = residue,
+        y = tmt_abpp + (1.25 / 16) * max_tmt,
+        label = condition,
+        color = condition
+      ),
+      inherit.aes = FALSE,
+      show.legend = FALSE,
+      size = FONT_SIZE,
+      size.unit = "pt"
+    ) +
+    geom_point(
+      data = label_data,
+      mapping = aes(fill = condition),
+      size = POINT_SIZE - 0.5,
+      shape = 21,
+      col = "black",
+      show.legend = FALSE,
+      stroke = POINT_STROKE / 2
+    ) +
+    scale_fill_manual(values = cols) +
+    scale_color_manual(values = cols) +
+    my_theme() +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(
+        color = "black",
+        size = 8,
+        family = "Arial"
+      )
+    ) +
+    scale_y_continuous(breaks = seq.int(0, 4000, by = brk_size)) +
+    facet_wrap(~ protein, scales = "free") -> plt
+  if (rotate_x_labels) {
+    plt <- plt +
+      theme(
+        axis.text.x = element_text(
+          color = "black",
+          angle = 45,
+          size = FONT_SIZE,
+          family = "Arial",
+          vjust = 1,
+          hjust = 1
+        )
+      )
+  }
+  
+  print(plt)
+  save_plot(paste0(results_dir, "06_dotplots/", paste(proteins, collapse = "_")),
+            height = ht,
+            width = wd)
+}
+```
+
+
+```{r, fig.width=2, fig.height=1.55}
+multi_condition_rc_plot(
+  c("HSPA9"),
+  ht = 1.55,
+  wd = 2,
+  rotate_x_labels = FALSE
+)
+
+multi_condition_rc_plot(
+  c("LONP1"),
+  ht = 1.55,
+  wd = 2,
+  rotate_x_labels = FALSE
+)
+
+
+```
+
+```{r, fig.width=1.3, fig.height=2}
+multi_condition_rc_plot(
+  c("PIP5K1B"),
+  ht = 2,
+  wd = 1.3,
+  rotate_x_labels = FALSE,
+  brk_size = 200
+)
+
+```
+
+
+```{r, fig.width = 2.5, fig.height=2.5}
+
+multi_condition_rc_plot(
+  proteins <- c("MAP2K3", "MAP2K4"),
+  ht = 2.5,
+  wd = 2.5,
+  rotate_x_labels = TRUE,
+  brk_size = 100
+)
+```
+
+
+
+
+## Quantifed cysteines barplot
+
+```{r, fig.height=1.8, fig.width=2}
+
+AXIS_TXT_MRGN = -5
+
+
+quant_colors <- c(
+  "reactivity changes" = "indianred2",
+  "analyzed" = "grey39",
+  "not analyzed" = "grey90"
+)
+
+"/Users/henrysanford/dev/reactivity/05_reactivity_changes/output/rc_df.csv" %>%
+  read_csv(show_col_types = FALSE) %>%
+  mutate(rc_any = case_when(((num_reactivity_changes_D4C != 0) |
+                               (num_reactivity_changes_D8C != 0) |
+                               (num_reactivity_changes_D4A != 0) |
+                               (num_reactivity_changes_D8A != 0)
+  ) ~ TRUE,
+  TRUE ~ FALSE)) %>% select(c(
+    uniprot,
+    rc_any,
+    num_quantified_peptides,
+    num_reactivity_changes_D4C
+  )) -> df
+print(df)
+df %>%
+  mutate(
+    reactivity_change = case_when(
+      num_quantified_peptides == 1 ~ "not analyzed",
+      rc_any == TRUE ~ "reactivity changes",
+      TRUE ~ "analyzed"
+    )
+  ) %>%
+  mutate(binned_quantified_peptides = case_when(
+    (num_quantified_peptides > 6) ~ "7+",
+    (num_quantified_peptides > 4) ~ "5-6",
+    TRUE ~ as.character(num_quantified_peptides)
+  )) -> df
+print(df)
+df$reactivity_change <-
+  factor(df$reactivity_change, levels = rev(names(quant_colors)))
+
+df %>%
+  arrange(reactivity_change, ascending = TRUE) %>%
+  distinct(.keep_all = TRUE) %>%
+  ggplot(aes(x = binned_quantified_peptides, fill = reactivity_change)) +
+  geom_bar(show.legend = FALSE,
+           width = BARPLOT_WIDTH) +
+  scale_fill_manual(values = quant_colors,
+                    breaks = names(quant_colors),
+                    name = "") +
+  guides(fill = guide_legend(ncol = 1, hjust = 1)) +
+  scale_y_break(c(100, 300), scales = 1 / 1.2, expand = c(0, 0)) +
+  scale_x_discrete() +
+  my_theme() +
+  theme(
+    legend.position =  "top",
+    legend.justification = "left",
+    legend.key.spacing = unit(-0.1, "mm"),
+    legend.key.spacing.x = unit(500, "mm"),
+    legend.margin = margin(b = -5),
+    # reverse annoying ggbreak changes
+    axis.line.y.right = element_blank(),
+    axis.ticks.y.right = element_blank(),
+    axis.text.y.right = element_blank(),
+    axis.title.x = element_text(
+      margin = margin(t = AXIS_TXT_MRGN),
+      color = "black",
+      family = FONT_FAMILY,
+      size = FONT_SIZE,
+      hjust = 0.5
+    ),
+    axis.title.y = element_text(
+      margin = margin(r = AXIS_TXT_MRGN),
+      color = "black",
+      family = FONT_FAMILY,
+      size = FONT_SIZE,
+      vjust = 0.5
+    ),
+    panel.border = element_blank(),
+    axis.line.x = AXIS_LINE,
+    axis.line.y = AXIS_LINE
+  ) +
+  ylab("number of proteins") +
+  xlab("quantified cysteines") +
+  ylim(0, 2400)
+
+save_plot(
+  paste0(results_dir, "07_barplots/num_peptides_rc"),
+  height = 2,
+  width = 2
+)
+
+```
+
+## Reactivity change stacked barplots
+
+```{r, fig.width=2.7, fig.height=2}
+
+colors <- c(
+  "Other" = "grey90",
+  "Nucleotide binding   \nproteins" = "#96D1A9"
+)
+
+x_axis_exand <- 0.01
+
+directions <- c("Higher", "Lower")
+paste0(protein_list_dir, "GO_term_lists/Mitochondrial/mitochondrial_gene_list_go.csv") %>%
+  read_csv() %>% 
+  pull(uniprot) -> mito_uniprots
+
+directions <- c("Higher", "Lower")
+paste0(protein_list_dir, "GO_term_lists/Nucleotide binding/02_genes_matching_query.csv") %>%
+  read_csv() %>% 
+  pull(uniprot) -> nuc_uniprots
+
+paste0(reactivity_vs_wp_dir, "/cysteine_reactivity_changes.csv") %>%
+  read_csv() -> cys_df
+cys_df$direction_of_reactivity_change <- factor(cys_df$direction_of_reactivity_change,directions)
+
+cys_df %>%
+  mutate(mitochondrial = case_when(uniprot %in% nuc_uniprots ~ "Nucleotide binding   \nproteins",
+                                   TRUE ~ "Other")) -> cys_df
+cys_df$mitochondrial <- factor(cys_df$mitochondrial, levels = names(colors))
+cys_df$condition <- factor(cys_df$condition, levels = c("D4A", "D8A", "D4C", "D8C"))
+cys_df %>%
+  ggplot(aes(x = condition, fill = mitochondrial)) -> mito_plot
+mito_plot +
+    geom_bar(
+           stat="count", show.legend = TRUE, width = 0.7, col = "black", size = LINE_WIDTH) + 
+  geom_text(
+    data = cys_df %>% filter(direction_of_reactivity_change == "Higher"),
+    stat = "count", 
+            inherit.aes = FALSE,
+            mapping = aes(x = condition, label = ..count..), 
+            vjust = -0.1, 
+            size = FONT_SIZE, 
+            size.unit = "pt") + 
+    geom_text(
+    data = cys_df %>% filter(direction_of_reactivity_change == "Lower"),
+    stat = "count", 
+            inherit.aes = FALSE,
+            mapping = aes(x = condition, label = ..count..), 
+            vjust = 1.1, 
+            size = FONT_SIZE, 
+            size.unit = "pt") + 
+  facet_grid("direction_of_reactivity_change", scales = "free_y", space = "free") + 
+  guides(fill = guide_legend(ncol =1)) +  
+  legend_theme() +
+  my_theme() +
+  theme(
+    strip.background = element_blank(),
+    panel.spacing = unit(0, "mm"),
+  ) +
+  xlab("") +
+  scale_fill_viridis_d(direction = -1) +
+  scale_fill_discrete(type = colors) +
+  ylab("number of reactivity changes") + 
+  scale_y_continuous(expand = c(0,0)) +
+  facetted_pos_scales(
+    y = list(
+      scale_y_continuous(expand = expansion(mult = c(0,x_axis_exand)), limits = c(0, 79)),
+      scale_y_continuous(expand = expansion(mult = c(x_axis_exand,0)), trans = "reverse", limits = c(90,0))
+      )
+    )
+save_plot(
+  fn = paste0(results_dir, "07_barplots/nuc_binding/nuc_binding_split"),
+  width = 2.7,
+  height = 2
+)
+```
+
+
+```{r, fig.width=2.5, fig.height=1.5}
+
+colors <- c(
+  "Other" = "grey90",
+  "Mitochondrial" = "#21918c"
+)
+
+directions <- c("Higher", "Lower")
+paste0(protein_list_dir, "GO_term_lists/Mitochondrial/mitochondrial_gene_list_go.csv") %>%
+  read_csv() %>% 
+  pull(uniprot) -> mito_uniprots
+
+paste0(reactivity_vs_wp_dir, "/cysteine_reactivity_changes.csv") %>%
+  read_csv() -> cys_df
+cys_df$direction_of_reactivity_change <- factor(cys_df$direction_of_reactivity_change,directions)
+
+cys_df %>%
+  mutate(mitochondrial = case_when(uniprot %in% mito_uniprots ~ "Mitochondrial",
+                                   TRUE ~ "Other")) -> cys_df
+cys_df$mitochondrial <- factor(cys_df$mitochondrial, levels = names(colors))
+cys_df$condition <- factor(cys_df$condition, levels = c("D4A", "D8A", "D4C", "D8C"))
+cys_df %>%
+  ggplot(aes(x = condition, fill = mitochondrial)) -> mito_plot
+mito_plot +
+    geom_bar(
+           stat="count", show.legend = TRUE, width = 0.7, col = "black", size = LINE_WIDTH) + 
+  geom_text(
+    data = cys_df %>% filter(direction_of_reactivity_change == "Higher"),
+    stat = "count", 
+            inherit.aes = FALSE,
+            mapping = aes(x = condition, label = ..count..), 
+            vjust = -0.1, 
+            size = FONT_SIZE, 
+            size.unit = "pt") + 
+    geom_text(
+    data = cys_df %>% filter(direction_of_reactivity_change == "Lower"),
+    stat = "count", 
+            inherit.aes = FALSE,
+            mapping = aes(x = condition, label = ..count..), 
+            vjust = 1.1, 
+            size = FONT_SIZE, 
+            size.unit = "pt") + 
+  facet_grid("direction_of_reactivity_change", scales = "free_y", space = "free") + 
+  guides(fill = guide_legend(ncol =1)) +  
+  legend_theme() +
+  my_theme() +
+  theme(
+    strip.background = element_blank(),
+    panel.spacing = unit(0, "mm"),
+  ) +
+  xlab("") +
+  scale_fill_viridis_d(direction = -1) +
+  scale_fill_discrete(type = colors) +
+  ylab("number of reactivity changes") + 
+  scale_y_continuous(expand = c(0,0)) +
+  facetted_pos_scales(
+    y = list(
+      scale_y_continuous(expand = expansion(mult = c(0,x_axis_exand)), limits = c(0, 88), breaks = c(0, 25, 50, 75)),
+      scale_y_continuous(expand = expansion(mult = c(x_axis_exand,0)), trans = "reverse", limits = c(101,0))
+      )
+    )
+save_plot(
+  fn = paste0(results_dir, "07_barplots/mitochondrial/mitochondrial_split"),
+  width = 2.5,
+  height = 1.5
+)
+```
+
+## Expression and reactivity boxplot
+
+```{r}
+expression_and_reactivity_boxplot <- function(condition_to_display,
+                                              control_condition,
+                                              signal_intensity_col_prefix,
+                                              proteins_to_plot,
+                                              whole_proteome_table,
+                                              reactivity_table) {
+  whole_proteome_table %>%
+    # select columns needed for plot
+    select(starts_with(signal_intensity_col_prefix) | "protein") %>%
+    select(-c("description")) %>%
+    filter(protein %in% proteins_to_plot) %>%
+    # concat protein and residue
+    column_to_rownames("protein") -> si_matrix
+  
+  # calculate fold change to median of control condition
+  fold_change = si_matrix / apply(si_matrix[, grepl(control_condition, colnames(si_matrix))], 1, median, na.rm =
+                                    T)
+  fold_change %>%
+    rownames_to_column("protein") %>%
+    # pivot to long format for plotting
+    pivot_longer(cols = colnames(.)[-1],
+                 names_to = "condition_replicate",
+                 values_to = "channel_ratio") %>%
+    # drop missing values
+    drop_na() %>%
+    separate_wider_delim(
+      cols = c("condition_replicate"),
+      delim = "_",
+      names = c("condition", "technical_replicate", "experiment"),
+      too_many = "drop"
+    ) %>%
+    filter(protein %in% proteins_to_plot) %>%
+    filter(condition == condition_to_display) -> wp_df
+  
+  wp_df$median_rc <- 0
+  wp_df$residue <- "Protein"
+  wp_df$regulation <- "Protein expression"
+  wp_df$residue_loc <- 0
+  
+  wp_df %>%
+    group_by(protein) %>%
+    mutate(median_wp = median(channel_ratio)) -> wp_df
+  wp_df %>% select(protein, median_wp) -> wp_stats
+  
+  reactivity_table %>%
+    # select columns needed for plot
+    select(starts_with(signal_intensity_col_prefix) |
+             "protein" | "residue") %>%
+    select(-c("description")) -> si_matrix
+  si_matrix$residue <- gsub(';', ',', si_matrix$residue)
+  si_matrix %>%
+    # concat protein and residue
+    unite(rowname, protein, residue) %>%
+    column_to_rownames() -> si_matrix
+  # calculate fold change to median of AB condition
+  fold_change = si_matrix / apply(si_matrix[, grepl(control_condition, colnames(si_matrix))], 1, median, na.rm =
+                                    T)
+  fold_change %>%
+    rownames_to_column("protein_residue") %>%
+    # pivot to long format for plotting
+    pivot_longer(cols = colnames(.)[-1],
+                 names_to = "condition_replicate",
+                 values_to = "channel_ratio") %>%
+    # drop missing values
+    drop_na() %>%
+    separate_wider_delim(
+      cols = c("protein_residue"),
+      delim = "_",
+      names = c("protein", "residue")
+    ) %>%
+    separate_wider_delim(
+      cols = c("condition_replicate"),
+      delim = "_",
+      names = c("condition", "experiment", "technical_replicate"),
+      too_many = "drop"
+    ) %>%
+    filter(protein %in% proteins_to_plot) %>%
+    filter(condition == condition_to_display) -> df
+  
+  df$protein <- factor(df$protein, levels = proteins_to_plot)
+  df$residue_loc <- str_split_fixed(df$residue, "C", 2)[, 2]
+  df$residue_loc <-
+    str_split_fixed(df$residue_loc, ",", 2)[, 1] %>% as.numeric()
+  df %>%
+    group_by(protein, residue) %>%
+    mutate(median_rc = median(channel_ratio)) -> rc_df
+  
+  
+  paste0(reactivity_vs_wp_dir, "/rc_df_long_format.csv") %>% read_csv() -> full_df
+  
+  rc_df %>%
+    merge(wp_stats, by = "protein", all.x = TRUE) %>%
+    mutate(wp_rc_ratio =  (median_rc) / (median_wp),) -> rc_df
+  merge(
+    x = rc_df,
+    y = full_df %>%
+      filter(condition == condition_to_display) %>%
+      select(protein, residue, reactivity_change, LFC_tmt_abpp),
+    by = c("protein", "residue"),
+    all.x = TRUE
+  ) %>%
+    mutate(
+      regulation = case_when(
+        if_all(reactivity_change, is.na) ~ "Unchanged",
+        LFC_tmt_abpp > 0 ~ "Higher",
+        LFC_tmt_abpp < 0 ~ "Lower",
+        TRUE ~ "Unchanged"
+      )
+    ) -> plt_df
+  
+  wp_df$reactivity_change = FALSE
+  wp_df$LFC_tmt_abpp = 0
+  wp_df$wp_rc_ratio = 0
+  wp_df$regulation = "Protein expression"
+  
+  rbind(plt_df, wp_df) -> df
+  df$protein <- factor(df$protein, levels = proteins_to_plot)
+  df %>%
+    unique() %>%
+    ggplot(aes(
+      x = reorder(residue, residue_loc),
+      fill = regulation,
+      y = log2(channel_ratio),
+      shape = regulation
+    )) +
+    geom_hline(
+      yintercept = 0,
+      size = LINE_WIDTH,
+      linetype = "solid",
+      color = "grey90"
+    ) +
+    geom_boxplot(
+      outliers = FALSE,
+      width = 0.7,
+      lwd = LINE_WIDTH,
+      show.legend = FALSE,
+      alpha = 0.8
+    ) +
+    geom_beeswarm(
+      corral.width = 1.2,
+      cex = 2,
+      col = "black",
+      stroke = POINT_STROKE,
+      show.legend = FALSE,
+      size = 1,
+      alpha = 0.9
+    ) +
+    facet_rep_grid( ~ protein, scales = "free_x", space = "free",) +
+    my_theme() +
+    theme(
+      plot.title = element_text(
+        size = 6,
+        color = "black",
+        family = "Helvetica",
+        hjust = 0.5
+      ),
+      strip.background = element_blank(),
+      axis.text.x = element_text(
+        color = "black",
+        angle = 45,
+        size = FONT_SIZE,
+        family = "Helvetica",
+        vjust = 1,
+        hjust = 1
+      ),
+      panel.spacing = unit(2, "mm"),
+      panel.border = element_blank(),
+      strip.text = element_text(
+        size = 8,
+        family = "Helvetica",
+        color = "black"
+      ),
+      axis.line.x = AXIS_LINE,
+      axis.line.y = AXIS_LINE,
+      strip.clip = "off"
+    ) +
+    labs(y = substitute(
+      paste('log'[2],
+            "(fold change):", n, "/", m),
+      list(n = condition_to_display, m = control_condition)
+    ),
+    x = "",
+    fill = "Reactivity") +
+    scale_fill_manual(
+      values = c(
+        "Higher" = SIG_UP_COL,
+        "Lower" = SIG_DOWN_COL,
+        "Unchanged" = UNCHANGED_COL,
+        "Protein expression" = "#54A868"
+        
+      )
+    ) +
+    scale_shape_manual(values = c(
+      "Higher" = 21,
+      "Unchanged" = 21,
+      "Lower" = 21,
+      "Protein expression" = 24
+      
+    )) -> plot
+  ht <- 2.2
+  wd <- 8
+  file_name <- paste(
+    condition_to_display,
+    "vs",
+    control_condition,
+    paste(proteins_to_plot, collapse = "_"),
+    sep = "_"
+  )
+  
+  print(plot)
+  
+  save_plot(
+    paste0(results_dir, "05_boxplots/", file_name),
+    width = wd,
+    height = ht
+  )
+  return(plt_df)
+}
+```
+
+```{r, fig.width=8, fig.height=2}
+'../../data/whole_proteome/combined_files/07_combfiles_percctrl_passes_two_replicate_variability_filter.csv' %>%
+  read_csv(show_col_types = FALSE) -> wp_table
+
+'../../data/reactivity/combined_files/20240821_5_rep_variability_filter/07_combfiles_cysaggr_percctrl_passes_two_replicate_variability_filter.csv' %>%
+  read_csv(show_col_types = FALSE) -> rc_table
+
+target_proteins <- c(
+  "NDUFV1",
+  "NDUFB7"
+) 
+condition_to_display <- "D4C"
+control_condition <- "D2"
+for(cond in conditions){
+  signal_intensity_col_prefix <- "D"
+  df <- expression_and_reactivity_boxplot(
+  condition_to_display = cond,
+  control_condition = control_condition,
+  signal_intensity_col_prefix = "D",
+  whole_proteome_table = wp_table,
+  reactivity_table = rc_table,
+  proteins_to_plot = target_proteins)
+}
+```
+
+
+## Add back experiment
+
+Aesthetic parameters for the add back experiment
+
+```{r}
+add_back_fills <- c(
+  "D2" = "darkgrey",
+  "D2-ATP" = "grey99",
+  "spacer1" = "transparent",
+  "D8A" = "#603EA6",
+  "D8A-ATP" = "#D13B95",
+  "spacer2" = "transparent",
+  "D8C" = "#E27753",
+  "D8C-ATP" = "#EF3D3B"
+)
+
+add_back_cols <- c(
+  "D2" = "black",
+  "D2-ATP" = "black",
+  "spacer1" = "transparent",
+  "D8A" = "black",
+  "D8A-ATP" = "black",
+  "spacer2" = "transparent",
+  "D8C" = "black",
+  "D8C-ATP" = "black"
+)
+
+add_back_shapes <- c(
+  "D2" = 21,
+  "D2-ATP" = 23,
+  "spacer1" = 21,
+  "D8A" = 21,
+  "D8A-ATP" = 23,
+  "spacer2" = 21,
+  "D8C" = 21,
+  "D8C-ATP" = 23
+)
+```
+
+
+### boxplot
+
+```{r, fig.height=2.2, fig.width=6.5}
+facetted_add_back_boxplot <-
+  function(proteins_to_plot,
+           fig_width,
+           fig_height,
+           show_legend = TRUE) {
+    paste0(add_back_dir, 'boxplots/formatted_reactivity_data.csv') %>%
+      read_csv(show_col_types = FALSE) %>%
+      filter(protein %in% proteins_to_plot) %>%
+      mutate(
+        lfc = log2(percent_control / 100),
+        super_condition <-
+          str_split_fixed(condition, "-ATP", 2)[, 1]
+      ) %>%
+      select(protein,
+             residue,
+             residue_loc,
+             lfc,
+             condition) -> df
+    
+    # add invisible spacers separating conditions D2, D8A, D8C
+    for (plot_protein in proteins_to_plot) {
+      map <- setNames(unique(df %>% filter(protein == plot_protein) %>% pull(residue)),
+                      unique(df %>% filter(protein == plot_protein) %>% pull(residue_loc)))
+      for (residue_location in names(map)) {
+        for (spacer_num in c("spacer1", "spacer2")) {
+          df[nrow(df) + 1, ] = list(
+            "protein" = plot_protein,
+            "residue" = map[residue_location],
+            "residue_loc" = as.double(residue_location),
+            "lfc" = 0,
+            "condition" = spacer_num
+          )
+        }
+      }
+    }
+    
+    legend_breaks = names(add_back_fills)[!grepl("spacer", names(add_back_fills))]
+    
+    df %>%
+      mutate(condition = factor(df$condition, levels = names(add_back_cols))) %>%
+      arrange(condition) %>%
+      ggplot(aes(
+        x = reorder(residue, residue_loc),
+        y = lfc,
+        fill = condition,
+        color = condition,
+        shape = condition
+      )) +
+      geom_hline(yintercept = c(1, -1),
+                 linetype = "dashed",
+                 size = LINE_WIDTH) +
+      geom_boxplot(
+        alpha = 0.9,
+        lwd = LINE_WIDTH,
+        outliers = FALSE,
+        show.legend = FALSE
+      ) +
+      geom_jitter(
+        size = POINT_SIZE - 1.5,
+        alpha = 0.9,
+        stroke = POINT_STROKE,
+        show.legend = show_legend,
+        position = position_jitterdodge(jitter.width = 0.1)
+      ) +
+      labs(y = substitute(paste(
+        'cysteine reactivity, log'[2],
+        "(FC from D2)"
+      )),
+      x = "") +
+      guides(fill = element_blank()) +
+      my_theme() +
+      theme(
+        strip.background = element_blank(),
+        strip.text = element_text(
+          color = "black",
+          size = FONT_SIZE,
+          family = "Arial"
+        ),
+        plot.title = element_text(
+          size = 8,
+          color = "black",
+          family = "Arial",
+          hjust = 0.5
+        ),
+        legend.title = element_blank(),
+        legend.box.background = element_blank(),
+        legend.position = "top",
+        legend.key = element_blank(),
+        legend.margin = margin(b = -14, t = -10),
+        legend.key.spacing.y = unit(-3, "mm"),
+        legend.text = element_text(
+          size = 6,
+          color = "black",
+          family = "Arial",
+          margin = margin(l = -4)
+        ),
+        legend.key.spacing.x = unit(-1, "mm")
+      ) +
+      scale_fill_manual(values = add_back_fills, breaks = legend_breaks) +
+      scale_color_manual(values = add_back_cols, breaks = legend_breaks) +
+      scale_shape_manual(values = add_back_shapes, breaks = legend_breaks) +
+      geom_vline(
+        xintercept = 1.5:length(unique(df$residue)),
+        size = LINE_WIDTH,
+        linetype = "dotted"
+      ) +
+      #scale_y_continuous(limits =c(-3.2,3.2), breaks = c(-3,-2,-1,0,1,2,3) ) +
+      facet_grid( ~ protein, space = "free", scales = "free_x") -> plt
+    print(plt)
+    
+    save_plot(paste0(
+      add_back_dir,
+      'boxplots/',
+      paste(proteins_to_plot, collapse = "_")
+    ),
+    width = fig_width,
+    height = fig_height)
+  }
+```
+
+
+
+```{r, fig.width=2.5, fig.height=2.2}
+add_back_targs <- c("HSPA9", "LONP1","MAP2K4")
+for (target in add_back_targs){
+ facetted_add_back_boxplot(
+   proteins_to_plot = c(target),
+   fig_width = 2.5,
+   fig_height = 2.2
+ )
+}
+```
+
+```{r, fig.width=3.5, fig.height=2.7}
+facetted_add_back_boxplot(
+ proteins_to_plot = c("MAP2K4", "MAP2K3"),
+ fig_width = 3.5,
+ fig_height = 2.4,
+ show_legend = TRUE
+)
+```
+
+
+```{r, fig.width=3.5, fig.height=2.4}
+facetted_add_back_boxplot(
+  proteins_to_plot = c("ZAP70"),
+  fig_width = 3.5,
+  fig_height = 2.4
+)
+```
+
+
+### condensed ATP sensitivity barplot
+
+```{r, fig.height=1.8, fig.width=2.5}
+condensed_atp_barplot_direction <- function(proteins_to_plot, fig_width, fig_height, rotate_x_labels = TRUE){
+  dodge_width <- 0.8
+  paste0(add_back_dir, 'protein_table_ATP_add_back_2_reps.csv') %>% 
+      read_csv(show_col_types = FALSE) %>%
+      filter(protein %in% proteins_to_plot) %>%
+      pivot_longer(
+        cols = c("ratio_D2_+/-_ATP","ratio_D8A_+/-_ATP","ratio_D8C_+/-_ATP"), 
+        names_to = "super_condition", values_to = "ratio") %>%
+      mutate(
+        residue_loc = as.numeric(
+          str_split_fixed(
+            str_split_fixed(residue, "C", n = 2)[,2]
+            , ",",n = 3)[,1]),
+        super_condition = str_split_fixed(super_condition, "_",n = 3)[,2],
+        general_reactivity_change = 
+        case_when(
+          (super_condition == "D8A") & (log2(`median_D8A-MgCl2` / 100) > 1) ~ "Higher",
+          (super_condition == "D8A") & (log2(`median_D8A-MgCl2` / 100) < -1) ~ "Lower",
+          (super_condition == "D8C") & (log2(`median_D8C-MgCl2` / 100) > 1) ~ "Higher",
+          (super_condition == "D8C") & (log2(`median_D8C-MgCl2` / 100) < -1) ~ "Lower",
+          TRUE ~ "Unchanged"
+          ),
+        super_condition = factor(super_condition, levels = c("D2", "D8A", "D8C")),
+        protein = factor(protein, levels = proteins_to_plot)) %>%
+    ggplot(aes(x = reorder(residue, residue_loc, group = super_condition), y = log2(ratio))) +
+    scale_fill_manual(values = EXHAUSTION_COLS) + 
+    geom_bar(
+      mapping = aes(fill = super_condition),
+      stat = "identity", 
+      position = position_dodge(width = dodge_width), 
+      width = 0.7, 
+      color = "black", size = LINE_WIDTH) + 
+    ggnewscale::new_scale_fill() +
+    scale_fill_manual(values = c("Higher" = SIG_UP_COL, "Lower" = SIG_DOWN_COL)) + 
+    # symbols indicating change from D2
+    geom_point(
+      mapping = aes(
+        fill = general_reactivity_change,
+        color = general_reactivity_change,
+        group = super_condition,
+      alpha = general_reactivity_change,
+      shape = general_reactivity_change,
+       y = log2(ratio) + ((log2(ratio) * 1/abs(log2(ratio)))*0.1),
+      ),
+      position = position_dodge2(width = dodge_width),
+      show.legend = FALSE,
+      stroke = POINT_STROKE,
+      size = 1.2,
+      color = "black"
+    ) +
+    facet_grid(~protein, scales = "free_x", space = "free") + 
+    my_theme() + 
+    scale_alpha_manual(values = c(
+      "Unchanged" = 0,
+      "Higher" = 1,
+      "Lower" = 1
+    )) +
+    scale_shape_manual(values = c(
+      "Unchanged" = 0,
+      "Higher" = 24,
+      "Lower" = 25
+    )) +
+    labs(
+      x = NULL,
+      y = expression("cysteine reactivity, log"[2]*"(+/- ATP)")
+    ) + 
+      theme(
+        strip.background = element_blank(),
+        strip.text = element_text(color="black", size=FONT_SIZE, family="Arial"),
+        plot.title = element_text(size=8, color = "black", family="Arial", hjust=0.5),
+        legend.title=element_blank(),
+        legend.box.background = element_blank(),
+        legend.position = "top",
+        legend.key = element_blank(),
+        legend.margin = margin(b = -10),
+        strip.clip = "off",
+        legend.key.width  = unit(2, "mm"),
+        legend.key.height  = unit(2, "mm"),
+        legend.text = element_text(size = 6, color = "black", family = "Arial", margin = margin(l = 0)),
+        legend.key.spacing.x = unit(0, "mm"),
+        axis.text.x = element_text(size = 6, color = "black", family = "Arial")
+      ) + 
+    geom_hline(yintercept = 0, color="grey", size = LINE_WIDTH) + 
+    geom_hline(yintercept = -1, color="black", size = LINE_WIDTH, linetype = "dashed") -> plot
+  if(rotate_x_labels){
+    plot + theme(axis.text.x = element_text(
+          color="black",angle=45, size=FONT_SIZE, family="Arial", vjust = 1, hjust=1)) -> plot
+  }
+  print(plot)
+  save_plot(
+    paste0(add_back_dir, "/", paste(proteins_to_plot, collapse = "_")),
+    width = fig_width, height = fig_height
+  )
+}
+
+```
+
+```{r, fig.width=2.5, fig.height=2.055}
+condensed_atp_barplot_direction(
+  c(
+    "AFG3L2", "SPG7", "HPRT1" 
+  ),
+  fig_width = 2.5,
+  fig_height = 2.055,
+  rotate_x_labels = FALSE
+)
+
+```
+
+```{r, fig.width=3.2, fig.height=2.4}
+condensed_atp_barplot_direction(
+  c("GCN1"),
+  fig_width = 3.2,
+  fig_height = 2.4,
+  rotate_x_labels = TRUE
+)
+```
+
+
+
+### stacked up and down barplot
+
+```{r, fig.width = 1.4, fig.height=1.7}
+x_axis_expand <- 0.2
+
+nucleotide_cols <- c("Nucleotide binding" = "#96d1a9",
+                     "Other" = UNCHANGED_COL)
+
+paste0(add_back_dir, 'bargraphs/formatted_add_back_regulation.csv') %>%
+  read_csv(show_col_types = FALSE) %>%
+  mutate(nucleotide_binding = case_when(uniprot %in% nuc_uniprots ~ "Nucleotide binding",
+                                        TRUE ~ "Other")) %>%
+  filter(value != "Unchanged") -> df
+df$nucleotide_binding <-
+  factor(df$nucleotide_binding, levels = rev(names(nucleotide_cols)))
+df$condition <-
+  gsub(pattern = "_\\+\\/\\-_ATP",
+       replacement = "",
+       x = 	df$condition)
+
+df %>%
+  arrange(nucleotide_binding) %>%
+  ggplot(aes(x = condition, fill = nucleotide_binding)) +
+  geom_bar(
+    stat = "count",
+    width = 0.7,
+    color = "black",
+    size = LINE_WIDTH,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(values = nucleotide_cols) +
+  geom_text(
+    data = df %>% filter(value == "Higher"),
+    stat = "count",
+    aes(label = ..count..,
+        y = ..count..,
+        x = condition),
+    vjust = -.5,
+    inherit.aes = FALSE,
+    size = FONT_SIZE,
+    size.unit = "pt",
+    position = position_dodge(width = 0.9)
+  ) +
+  geom_text(
+    data = df %>% filter(value == "Lower"),
+    stat = "count",
+    aes(
+      label = after_stat(count),
+      y = after_stat(count),
+      x = condition
+    ),
+    vjust = 1.1,
+    inherit.aes = FALSE,
+    size = FONT_SIZE,
+    size.unit = "pt",
+    position = position_dodge(width = 0.9)
+  ) +
+  legend_theme() +
+  my_theme() +
+  theme(
+    strip.background = element_blank(),
+    axis.text.x = element_text(
+      size = 6,
+      color = "black",
+      family = "Arial"
+    )
+  ) +
+  facet_grid("value", scales = "free_y", space = "free") +
+  ylab("number of cysteines") +
+  xlab("") +
+  theme(strip.background = element_blank(),
+        panel.spacing = unit(0, "mm"),) +
+  facetted_pos_scales(y = list(
+    scale_y_continuous(expand = expansion(mult = c(0, x_axis_expand)), limits = c(0, 160)),
+    scale_y_continuous(
+      expand = expansion(mult = c(x_axis_expand, 0)),
+      trans = "reverse",
+      limits = c(150, 0)
+    )
+  ))
+
+save_plot(
+  paste0(add_back_dir, "bargraphs/sites_affected_by_add_back_split"),
+  height = 2,
+  width = 1.4
+  
+)
+```
+
+### ATP sensitivity scatterplot
+
+```{r, fig.width=2, fig.height=3}
+atp_sensitivity_scatterplot <- function(condition,
+                                        control,
+                                        y_max,
+                                        y_min,
+                                        x_max,
+                                        x_min,
+                                        fill_variable = "ATP_ratio") {
+  y_nudge <- 3
+  teal <- paste0("More ATP sensitive at ", condition)
+  yellow <- paste0("More ATP sensitive at ", control)
+  
+  
+  line_df <- data.frame(
+    x1 = c(y_min - 1 , y_min + 1),
+    x2 = c(x_max, x_max),
+    y1 = c(y_min, y_min),
+    y2 = c(x_max + 1, x_max - 1)
+  )
+  
+  
+  paste0(add_back_dir, 'protein_table_ATP_add_back_2_reps.csv') %>%
+    read_csv(show_col_types = FALSE) %>%
+    mutate(name = paste0(protein, "_", residue)) -> df
+  df$x_var <- log2(df[, paste0("ratio_", condition, "_+/-_ATP")][[1]])
+  df$y_var <- log2(df[, paste0("ratio_", control, "_+/-_ATP")][[1]])
+  # drop Inf
+  df <- df[(is.finite(df$y_var) & is.finite(df$x_var)), ]
+  
+  df$quadrant <-
+    df[, paste0("ATP_sensitivity_", condition, "_vs_", control)][[1]]
+  if (fill_variable == "ATP_ratio") {
+    n_cols <- 1
+    df$regulation <- df$quadrant
+    atp_ratio_cols <- setNames(c("#21918c", "#bade28", "grey"),
+                               c(teal, yellow, "Unchanged"))
+    df %>% filter(
+      name %in% c(
+        "AFG3L2_C313",
+        "HPRT1_C23",
+        "C106",
+        "HSPA9_C317",
+        "LONP1_C682",
+        "MAP2K3_C305",
+        "MAP2K4_C246",
+        "CHUK_C30"
+      )
+    ) -> lbl_df
+    
+  } else {
+    n_cols <- 4
+    df$regulation <- df$proteasome_subunit_family
+    atp_ratio_cols <- c(
+      "PSMA" = "#bade28",
+      "PSMB" = "#21918c",
+      "PSMC" = "#440154",
+      "PSMD" = "#fc8961",
+      "Other" = "gray88"
+    )
+    df$regulation <- factor(df$regulation, rev(names(atp_ratio_cols)))
+    df %>% filter(regulation != "Other") -> lbl_df
+  }
+  
+  print(paste(
+    max(df$y_var[is.finite(df$y_var)]),
+    min(df$y_var[is.finite(df$y_var)]),
+    max(df$x_var[is.finite(df$x_var)]),
+    min(df$x_var[is.finite(df$x_var)])
+  ))
+  
+  df %>%
+    arrange(regulation) %>%
+    ggplot(aes(x = x_var,
+               y = y_var)) +
+    geom_point(
+      aes(fill = regulation),
+      shape = 21,
+      size = POINT_SIZE - 1,
+      stroke = POINT_STROKE / 2,
+      color = "gray88",
+      alpha = 0.4
+    ) +
+    guides(
+      fill = guide_legend(ncol = n_cols, reverse = TRUE),
+      color = NULL,
+      alpha = NULL,
+      size = NULL
+    ) +
+    my_theme() +
+    theme(
+      legend.title = element_blank(),
+      legend.box.background = element_blank(),
+      legend.position = "top",
+      legend.justification.top = "top",
+      legend.justification = "center",
+      legend.box.just = "center",
+      aspect.ratio = 1,
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -0.8),
+      legend.key.spacing.y = unit(-0.9, "cm"),
+      legend.key.spacing.x = unit(-0.05, "cm")
+    ) +
+    geom_segment(
+      data = line_df,
+      aes(
+        x = x1,
+        y = y1,
+        xend = x2,
+        yend = y2
+      ),
+      inherit.aes = FALSE,
+      linetype = "dashed",
+      size = LINE_WIDTH,
+      show.legend = FALSE,
+      color = "black"
+    ) +
+    geom_text_repel(
+      data = lbl_df %>% filter(quadrant == teal),
+      mapping = aes(
+        x = x_var,
+        y = y_var,
+        label = name,
+        color = regulation
+      ),
+      size = FONT_SIZE_MM,
+      nudge_y = y_nudge,
+      segment.size = LINE_WIDTH,
+      show.legend = FALSE
+    ) +
+    geom_text_repel(
+      data = lbl_df %>% filter(quadrant == yellow),
+      mapping = aes(
+        x = x_var,
+        y = y_var,
+        label = name,
+        color = regulation
+      ),
+      size = FONT_SIZE_MM,
+      nudge_y = -y_nudge,
+      segment.size = LINE_WIDTH,
+      show.legend = FALSE
+    ) +
+    scale_fill_manual(values = atp_ratio_cols) +
+    scale_color_manual(values = atp_ratio_cols) +
+    labs(x = substitute(
+      paste('cysteine reactivity, log'[2], "(", n, "-ATP/", n, ")"),
+      list(n = condition)
+    ),
+    y = substitute(
+      paste('cysteine reactivity, log'[2], "(", n, "-ATP/", n, ")"),
+      list(n = control)
+    ),) +
+    scale_x_continuous(
+      breaks = round(x_min):round(x_max),
+      limits = c(x_min, x_max),
+      expand = c(0, 0)
+    ) +
+    scale_y_continuous(
+      breaks = round(y_min):round(y_max),
+      limits = c(y_min, y_max),
+      expand = c(0, 0)
+    ) -> plot
+  
+  print(plot)
+  
+  save_plot(
+    paste0(
+      add_back_dir,
+      "scatterplot/add_back_scatterplot_",
+      condition,
+      "_vs_",
+      control
+    ),
+    width = 2,
+    height = 3
+  )
+}
+
+for (fill_var in c("ATP_ratio", "PSM_family")) {
+  atp_sensitivity_scatterplot(
+    condition = "D8C",
+    control = "D8A",
+    y_max = 4.9,
+    y_min = -3.5,
+    x_max = 3.4,
+    x_min = -6,
+    fill_variable = fill_var
+  )
+  
+  atp_sensitivity_scatterplot(
+    condition = "D8C",
+    control = "D2",
+    y_max = 4.4,
+    y_min = -2.9,
+    x_max = 3.4,
+    x_min = -6,
+    fill_variable = fill_var
+  )
+  
+  atp_sensitivity_scatterplot(
+    condition = "D8A",
+    control = "D2",
+    y_max = 6.5,
+    y_min = -3.5,
+    x_max = 4.8,
+    x_min = -6,
+    fill_variable = fill_var
+  )
+}
+```
+
+
