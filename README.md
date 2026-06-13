@@ -2,23 +2,40 @@
 
 Code for analysis and visualization of molecular profiling data from the 2026 manuscript on T cell dysfunction.
 
-To install python dependencies
+## Setup
+
+### Python (conda)
+
+To install Python dependencies:
+
 ```sh
-conda create env -f environment.yml
+conda env create -f environment.yml
 conda activate t-cell-dysfunction
 ```
 
-The notebooks folder is organized by data type 
+### R (renv)
 
-- whole proteome
-- reactivity
-- RNA (bulk RNA-Seq)
-- metabolomics
-- low input proteomics
+R dependencies are pinned in `renv.lock` (R 4.1.1). Install them with:
 
-Refer to README.md in each subfolder of notebooks for additional analysis details.
+```r
+renv::restore()
+```
 
-### Authors
+## Layout
+
+The `notebooks/` folder is organized by data type:
+
+- `01_whole_proteome`
+- `02_rna` — bulk RNA-Seq
+- `03_reactivity`
+- `04_metabolomics`
+- `05_low_input_proteomics`
+
+Shared helper functions live in `bin/` (Python and R).
+
+Refer to `README.md` in each subfolder of `notebooks/` for additional analysis details.
+
+## Authors
 
 - [Henry Sanford](mailto:hsanford@rockefeller.edu)
 
