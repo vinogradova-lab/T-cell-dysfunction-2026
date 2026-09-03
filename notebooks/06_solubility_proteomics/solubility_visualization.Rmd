@@ -1,0 +1,1009 @@
+---
+title: "Detergent soluble / insoluble proteomics (HK3-124)"
+output: html_document
+---
+
+Publication figures for the soluble/insoluble unenriched proteomics run. Reads the CSVs
+written by `solubility_analysis.ipynb`; does no computation of its own.
+
+```{r setup, message=FALSE, warning=FALSE}
+if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+  setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+}
+source("../../bin/figure_utils.R")
+
+data_dir     <- "../../data/solubility/"
+results_dir  <- paste0(data_dir, "03_results/")
+volcano_dir  <- paste0(results_dir, "volcano_plots/")
+gsea_dir     <- paste0(results_dir, "gsea/")
+
+dir.create(paste0(volcano_dir, "figures"), recursive = TRUE, showWarnings = FALSE)
+```
+
+## Aesthetics
+
+The ATP add-back palette (`notebooks/03_reactivity/reactivity_visualization.Rmd`) remapped onto
+the six state x fraction groups: soluble keeps the base condition colour and a circle, insoluble
+takes the accent colour and a diamond.
+
+```{r}
+solubility_fills <- c(
+  "D2-Soluble"    = "darkgrey",
+  "D2-Insoluble"  = "grey99",
+  "D8A-Soluble"   = "#603EA6",
+  "D8A-Insoluble" = "#D13B95",
+  "D8C-Soluble"   = "#E27753",
+  "D8C-Insoluble" = "#EF3D3B"
+)
+
+solubility_shapes <- c(
+  "D2-Soluble"    = 21, "D2-Insoluble"  = 23,
+  "D8A-Soluble"   = 21, "D8A-Insoluble" = 23,
+  "D8C-Soluble"   = 21, "D8C-Insoluble" = 23
+)
+
+group_levels <- names(solubility_fills)
+
+regulation_fills <- c(
+  "Significant Up"          = SIG_UP_COL,
+  "Significant Down"        = SIG_DOWN_COL,
+  "Not Significant"         = UNCHANGED_COL,
+  "Not Significant Up"      = UNCHANGED_COL,
+  "Not Significant Down"    = UNCHANGED_COL,
+  "Significant but <1.5 FC" = UNCHANGED_COL
+)
+```
+
+`ggsave` silently drops points that fall outside a scale, so every limit in this document is
+applied with `coord_cartesian()` and never with `xlim`/`ylim`/`scale_*_continuous(limits=)`.
+This helper turns any "removed rows" warning into an error.
+
+```{r}
+save_checked <- function(plot, n_expected, fn, width, height, layers = 1) {
+  built <- ggplot_build(plot)$data
+  n_drawn <- sum(vapply(
+    layers,
+    function(i) sum(!is.na(built[[i]]$x) & !is.na(built[[i]]$y)),
+    numeric(1)
+  ))
+  stopifnot(n_drawn == n_expected)
+
+  withCallingHandlers(
+    print(plot),
+    warning = function(w) {
+      if (grepl("Removed|missing values|non-finite", conditionMessage(w))) stop(w)
+      invokeRestart("muffleWarning")
+    }
+  )
+  save_plot(fn, width = width, height = height)
+  invisible(plot)
+}
+```
+
+## PCA
+
+`replot_pca()` in `figure_utils.R` cannot be reused here: it hardcodes the five-colour
+`cols` palette and references an undefined `results_dir` at two of its save points. This is a
+local equivalent that keeps its geometry but adds the fraction shape scale and a legend.
+
+```{r}
+plot_solubility_pca <- function(pca_dir, out_name, x = "PC1", y = "PC2") {
+  percent <- read_csv(paste0(pca_dir, "percent_explained.csv"), show_col_types = FALSE)
+  pcs <- split(percent$percent_explained, percent$principal_component)
+
+  scores <- read_csv(paste0(pca_dir, "pca_results.csv"), show_col_types = FALSE) %>%
+    mutate(condition = factor(condition, levels = group_levels))
+
+  pad <- function(v) {
+    r <- range(v)
+    r + c(-1, 1) * diff(r) * 0.12
+  }
+
+  plt <- scores %>%
+    ggplot(aes(x = .data[[x]], y = .data[[y]],
+               fill = condition, shape = condition)) +
+    geom_point(size = POINT_SIZE, alpha = 0.9, col = "black", stroke = POINT_STROKE) +
+    scale_fill_manual(values = solubility_fills, drop = FALSE) +
+    scale_shape_manual(values = solubility_shapes, drop = FALSE) +
+    coord_cartesian(xlim = pad(scores[[x]]), ylim = pad(scores[[y]])) +
+    labs(x = paste0(x, " (", pcs[[x]], "%)"),
+         y = paste0(y, " (", pcs[[y]], "%)")) +
+    my_theme() +
+    theme(
+      aspect.ratio = 1,
+      legend.title = element_blank(),
+      legend.position = "right",
+      legend.key = element_blank(),
+      legend.key.size = unit(0.25, "cm"),
+      legend.margin = margin(l = -4),
+      # my_theme() pulls legend text left by 5pt, which slides the label under the
+      # key for names this long.
+      legend.text = element_text(size = FONT_SIZE, colour = "black",
+                                 family = FONT_FAMILY, margin = margin(l = 1))
+    ) +
+    guides(fill = guide_legend(override.aes = list(size = 1.6)))
+
+  save_checked(plt, nrow(scores), paste0(pca_dir, out_name), width = 3.1, height = 2)
+}
+```
+
+```{r fig.width=3.1, fig.height=2}
+plot_solubility_pca(paste0(results_dir, "pca_unnormalized/"), "pca_plot")
+```
+
+The per-fraction constant is a translation on the log2 scale, so it loads onto PC1 and inflates
+it (86.9% -> 94.8%) without moving the PC2 scores that separate the cell states. The
+un-normalized PCA above is the one to use; the normalized version is kept for comparison.
+
+```{r fig.width=3.1, fig.height=2}
+plot_solubility_pca(paste0(results_dir, "pca_normalized/"), "pca_plot")
+```
+
+## Volcano plots
+
+```{r}
+volcano_data <- read_csv(paste0(volcano_dir, "long_volcano_df.csv"), show_col_types = FALSE)
+protein_counts <- read_csv(paste0(volcano_dir, "volcano_protein_counts.csv"), show_col_types = FALSE)
+
+# Shared axis ranges per family, so panels are comparable within a family without the
+# off-centre fraction contrasts stretching the state contrasts.
+family_limits <- volcano_data %>%
+  group_by(family) %>%
+  summarise(
+    x_lo = min(log2_FC), x_hi = max(log2_FC),
+    y_lo = 0,            y_hi = max(neg_log10_pval),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    x_pad = (x_hi - x_lo) * 0.05,
+    y_pad = y_hi * 0.08,
+    x_lo = x_lo - x_pad, x_hi = x_hi + x_pad,
+    y_hi = y_hi + y_pad
+  )
+
+family_limits
+```
+
+```{r}
+# `data`, `counts`, `limits` and `out_dir` default to the HK3-124 globals defined above, so
+# the original call sites are unchanged; the revision section passes its own.
+plot_volcano <- function(condition_name, control_name,
+                         data = volcano_data, counts = protein_counts,
+                         limits = family_limits, out_dir = volcano_dir,
+                         label_proteins = character()) {
+  df <- data %>%
+    filter(condition == condition_name, control_condition == control_name) %>%
+    mutate(
+      Regulation = factor(Regulation, levels = names(regulation_fills)),
+      significant = Regulation %in% c("Significant Up", "Significant Down")
+    )
+
+  lims <- limits %>% filter(family == df$family[1])
+
+  expected <- counts %>%
+    filter(condition == condition_name, control_condition == control_name) %>%
+    pull(n_tested)
+  stopifnot(nrow(df) == expected)
+
+  n_up   <- sum(df$Regulation == "Significant Up")
+  n_down <- sum(df$Regulation == "Significant Down")
+
+  plt <- ggplot(df, aes(x = log2_FC, y = neg_log10_pval,
+                        fill = Regulation, alpha = significant)) +
+    # Unchanged cloud underneath, significant points on top.
+    geom_point(data = df %>% filter(!significant),
+               size = 0.5, shape = 21, stroke = POINT_STROKE / 2, col = "black") +
+    geom_point(data = df %>% filter(significant),
+               size = 0.5, shape = 21, stroke = POINT_STROKE / 2, col = "black") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", linewidth = LINE_WIDTH) +
+    geom_vline(xintercept = c(-FC_CUTOFF, FC_CUTOFF), linetype = "dashed",
+               linewidth = LINE_WIDTH) +
+    annotate("text", x = lims$x_lo, y = lims$y_hi, label = n_down,
+             hjust = 0, vjust = 1, size = FONT_SIZE_MM, colour = SIG_DOWN_COL) +
+    annotate("text", x = lims$x_hi, y = lims$y_hi, label = n_up,
+             hjust = 1, vjust = 1, size = FONT_SIZE_MM, colour = SIG_UP_COL) +
+    scale_fill_manual(values = regulation_fills, drop = FALSE, guide = "none") +
+    scale_alpha_manual(values = c("FALSE" = 0.3, "TRUE" = 0.9), guide = "none") +
+    coord_cartesian(xlim = c(lims$x_lo, lims$x_hi), ylim = c(lims$y_lo, lims$y_hi)) +
+    labs(
+      x = substitute(paste("protein expression, log"[2], "(", n, "/", m, ")"),
+                     list(n = condition_name, m = control_name)),
+      y = expression(paste("-log"[10], "(p-value)"))
+    ) +
+    my_theme() +
+    theme(aspect.ratio = 1)
+
+  # Proteins of interest are redrawn on top (already counted in layers 1-2, so the drawn-point
+  # audit still sums to nrow(df)) with alpha forced to 1 so a non-significant one isn't faded.
+  if (length(label_proteins)) {
+    poi <- df %>% filter(protein %in% label_proteins)
+    stopifnot(nrow(poi) == length(intersect(label_proteins, df$protein)))
+    plt <- plt +
+      geom_point(data = poi, size = 0.5, shape = 21, stroke = POINT_STROKE / 2,
+                 colour = "black", alpha = 1) +
+      geom_text_repel(
+        data = poi, aes(x = log2_FC, y = neg_log10_pval, label = protein),
+        inherit.aes = FALSE, size = FONT_SIZE_MM, colour = "black",
+        box.padding = 0.35, min.segment.length = 0, segment.size = LINE_WIDTH)
+  }
+
+  # Wider than the repo's 2 in volcano default: the axis label carries two
+  # <state>-<fraction> names, which is roughly twice the width of the D2/D8C names the
+  # 2 in canvas was sized for, and it clips at that width.
+  fn <- paste0(out_dir, "figures/", condition_name, " vs ", control_name)
+  save_checked(plt, nrow(df), fn, width = 2.75, height = 2.9, layers = 1:2)
+}
+```
+
+```{r fig.width=2.75, fig.height=2.9}
+for (i in seq_len(nrow(protein_counts))) {
+  plot_volcano(protein_counts$condition[i], protein_counts$control_condition[i])
+}
+```
+
+## GSEA
+
+Pre-ranked GSEA on GO biological process, one plot per insoluble/soluble fraction contrast.
+Bar chart of NES coloured by -log10(FDR), following
+`notebooks/01_whole_proteome/whole_proteome_visualization.Rmd` and
+`notebooks/05_low_input_proteomics/low_input.Rmd`.
+
+**Positive NES = enriched among proteins gaining intensity in the insoluble fraction.** The
+top terms are shown per direction, so the insoluble-up side is always represented even when
+the depleted side has the larger absolute scores.
+
+```{r}
+clean_term <- function(term) {
+  str_split_fixed(term, "_", 2)[2] -> term
+  gsub("\\b([a-z])", "\\U\\1", tolower(term), perl = TRUE) -> term
+  str_replace_all(term, "_", " ") -> term
+  str_wrap(term, 40) -> term
+  return(term)
+}
+
+plot_gsea <- function(state, n_each = 10, fdr_cutoff = 0.01, dir = gsea_dir) {
+  paste0(dir, state, "/gseapy.gene_set.prerank.report.csv") %>%
+    read_csv(show_col_types = FALSE) %>%
+    mutate(
+      Term = lapply(Term, FUN = clean_term) %>% unlist(),
+      `-log10(FDR)` = -log10(`FDR q-val`)
+    ) %>%
+    arrange(abs(NES)) -> df
+
+  # Infinite -log10(FDR) is capped at the top of the fill scale, per repo convention.
+  df$`-log10(FDR)`[is.infinite(df$`-log10(FDR)`)] <- 5.5
+
+  sig <- df %>% filter(`FDR q-val` < fdr_cutoff)
+  down_df <- sig %>% filter(NES < 0) %>% tail(n_each)
+  up_df   <- sig %>% filter(NES > 0) %>% tail(n_each)
+  plot_df <- rbind(down_df, up_df)
+
+  plt <- plot_df %>%
+    ggplot(aes(x = NES, y = reorder(Term, NES), fill = `-log10(FDR)`)) +
+    geom_col(color = "black", linewidth = LINE_WIDTH, width = 0.5) +
+    geom_vline(xintercept = 0, color = "black", linewidth = LINE_WIDTH) +
+    my_theme() +
+    labs(
+      # bquote, not paste0: `"log"[2]` inside paste0 subscripts a character vector,
+      # which yields NA rather than a subscript.
+      x = bquote(.(state) ~ "log"[2] * "(Insoluble/Soluble) NES"),
+      y = NULL,
+      fill = expression("-log"[10] * "(FDR)")
+    ) +
+    theme(
+      axis.text.y = element_text(size = 5, family = FONT_FAMILY),
+      legend.text = element_text(margin = margin(l = 1)),
+      legend.key.height = unit(4, "mm"),
+      legend.key.width = unit(4, "mm"),
+      panel.grid.major = element_line(color = "grey90", linewidth = LINE_WIDTH)
+    ) +
+    scale_fill_continuous(low = "#B3CDE3", high = "#B10F7C", limits = c(1.5, 5.5))
+
+  # One bar per selected term, so nothing is dropped by the fill scale limits.
+  save_checked(plt, nrow(plot_df), paste0(dir, state, "/top_enriched_sets"),
+               width = 3.5, height = 4)
+  message(state, ": ", nrow(up_df), " up / ", nrow(down_df), " down of ",
+          nrow(sig), " sets at FDR < ", fdr_cutoff)
+  invisible(plot_df)
+}
+```
+
+```{r fig.width=3.5, fig.height=4}
+for (state in c("D2", "D8A", "D8C")) {
+  plot_gsea(state)
+}
+```
+
+## Verification
+
+Every plotted point count must equal the tested count from the Python audit, and the totals
+must reconcile against the 5330 input proteins.
+
+```{r}
+stopifnot(all(
+  protein_counts$n_tested +
+    protein_counts$n_dropped_group_too_small +
+    protein_counts$n_dropped_other == protein_counts$n_input
+))
+stopifnot(nrow(volcano_data) == sum(protein_counts$n_tested))
+
+# No point may fall outside its family's limits.
+volcano_data %>%
+  left_join(family_limits, by = "family") %>%
+  summarise(
+    outside_x = sum(log2_FC < x_lo | log2_FC > x_hi),
+    outside_y = sum(neg_log10_pval < y_lo | neg_log10_pval > y_hi)
+  ) -> outside
+stopifnot(outside$outside_x == 0, outside$outside_y == 0)
+
+protein_counts %>%
+  select(condition, control_condition, n_input, n_tested,
+         n_significant_up, n_significant_down, median_log2_FC)
+```
+
+# Revision run: HK3-129 + HK3-130
+
+Everything below is the two-donor revision run, analysed and written by the revision section
+of `solubility_analysis.ipynb`. The design differs from HK3-124 in three ways that matter to
+the figures:
+
+- **Two donors.** `d1` = HK3-129, `d2` = HK3-130, each contributing two TMT channel
+  duplicates, so a state x fraction group has four channels. The replicate unit is the donor.
+- **No normalization.** No soluble/insoluble protein concentrations were recorded for these
+  runs, so there is no Final dilution factor to divide out. The fraction contrasts keep their
+  large negative global offset; read them as a global shift, not as regulation.
+- **Two-donor filter.** Only proteins quantified in both donors in all six groups are kept,
+  4823 of 5569. All seven proteins of interest survive, as do all eight of the barplot panel.
+
+```{r}
+rev_results_dir <- paste0(data_dir, "revision/03_results/")
+rev_volcano_dir <- paste0(rev_results_dir, "volcano_plots/")
+rev_scatter_dir <- paste0(rev_results_dir, "scatterplots/")
+rev_barplot_dir <- paste0(rev_results_dir, "barplots/")
+rev_gsea_dir    <- paste0(rev_results_dir, "gsea/")
+
+for (d in c(paste0(rev_volcano_dir, "figures"), paste0(rev_scatter_dir, "figures"),
+            paste0(rev_barplot_dir, "figures"))) {
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
+}
+
+PROTEINS_OF_INTEREST <- c("MAP2K3", "MAP2K4", "LONP1", "HSPA9",
+                          "DNAJA3", "NDUFA9", "VDAC1")
+
+# The barplot panel, mirroring `BARPLOT_PROTEIN_SETS` in solubility.py: `PROTEINS_OF_INTEREST`
+# plus PSMC5. GZMB is intentionally excluded.
+BARPLOT_PANEL <- c("MAP2K3", "MAP2K4", "LONP1", "HSPA9", "PSMC5",
+                   "DNAJA3", "NDUFA9", "VDAC1")
+
+# Shared donor shape scale: circle = d1, square = d2, everywhere in this section.
+donor_shapes <- c("d1" = 21, "d2" = 22)
+```
+
+## PCA
+
+```{r fig.width=3.3, fig.height=2}
+plot_revision_pca <- function(x = "PC1", y = "PC2") {
+  pca_dir <- paste0(rev_results_dir, "pca_unnormalized/")
+  percent <- read_csv(paste0(pca_dir, "percent_explained.csv"), show_col_types = FALSE)
+  pcs <- split(percent$percent_explained, percent$principal_component)
+
+  scores <- read_csv(paste0(pca_dir, "pca_results.csv"), show_col_types = FALSE) %>%
+    mutate(
+      condition = factor(condition, levels = group_levels),
+      # `<state>-<fraction>_<donor>_<duplicate>`
+      donor = str_split_fixed(channel_name, "_", 3)[, 2]
+    )
+  stopifnot(all(scores$donor %in% names(donor_shapes)))
+
+  pad <- function(v) {
+    r <- range(v)
+    r + c(-1, 1) * diff(r) * 0.12
+  }
+
+  plt <- scores %>%
+    ggplot(aes(x = .data[[x]], y = .data[[y]], fill = condition, shape = donor)) +
+    geom_point(size = POINT_SIZE, alpha = 0.9, col = "black", stroke = POINT_STROKE) +
+    scale_fill_manual(values = solubility_fills, drop = FALSE) +
+    scale_shape_manual(values = donor_shapes, drop = FALSE) +
+    coord_cartesian(xlim = pad(scores[[x]]), ylim = pad(scores[[y]])) +
+    labs(x = paste0(x, " (", pcs[[x]], "%)"),
+         y = paste0(y, " (", pcs[[y]], "%)")) +
+    my_theme() +
+    theme(
+      aspect.ratio = 1,
+      legend.title = element_blank(),
+      legend.position = "right",
+      legend.key = element_blank(),
+      legend.key.size = unit(0.25, "cm"),
+      legend.margin = margin(l = -4),
+      legend.text = element_text(size = FONT_SIZE, colour = "black",
+                                 family = FONT_FAMILY, margin = margin(l = 1))
+    ) +
+    guides(fill = guide_legend(override.aes = list(size = 1.6, shape = 21)),
+           shape = guide_legend(override.aes = list(size = 1.6)))
+
+  save_checked(plt, nrow(scores), paste0(pca_dir, "pca_plot"), width = 3.3, height = 2)
+}
+
+plot_revision_pca()
+```
+
+## Volcano plots
+
+Same nine comparisons as HK3-124, now on four channels per group (two donors x two TMT
+duplicates), with the seven proteins of interest drawn on top and labelled.
+
+```{r}
+rev_volcano_data <- read_csv(paste0(rev_volcano_dir, "long_volcano_df.csv"),
+                             show_col_types = FALSE)
+rev_protein_counts <- read_csv(paste0(rev_volcano_dir, "volcano_protein_counts.csv"),
+                               show_col_types = FALSE)
+
+rev_family_limits <- rev_volcano_data %>%
+  group_by(family) %>%
+  summarise(
+    x_lo = min(log2_FC), x_hi = max(log2_FC),
+    y_lo = 0,            y_hi = max(neg_log10_pval),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    x_pad = (x_hi - x_lo) * 0.05,
+    y_pad = y_hi * 0.08,
+    x_lo = x_lo - x_pad, x_hi = x_hi + x_pad,
+    y_hi = y_hi + y_pad
+  )
+
+rev_family_limits
+```
+
+```{r fig.width=2.75, fig.height=2.9}
+for (i in seq_len(nrow(rev_protein_counts))) {
+  plot_volcano(
+    rev_protein_counts$condition[i], rev_protein_counts$control_condition[i],
+    data = rev_volcano_data, counts = rev_protein_counts,
+    limits = rev_family_limits, out_dir = rev_volcano_dir,
+    label_proteins = PROTEINS_OF_INTEREST
+  )
+}
+```
+
+## Scatterplots
+
+log2FC against log2FC, styled after `plot_concordance` in
+`notebooks/07_spin_reactivity/spin_reactivity_visualization.Rmd`: one symmetric range shared
+by both axes so the identity line renders at 45 degrees, the grey identity line, and the
+dashed diagonals one `BAND_CUTOFF` either side of it marking a **2-fold** difference between
+the two contrasts. Ranges come from `coord_cartesian()`, never `scale_*_continuous(limits =)`.
+
+`BAND_CUTOFF` is not `FC_CUTOFF`: the latter is the project's log2(1.5) significance cutoff,
+which the volcanoes above use. The band is a stricter 2-fold, because `delta` is a difference of
+two log2FCs and carries no p-value of its own - the band is the only thing separating a real
+divergence from the scatter of two noisy measurements. It is read back from the Python layer,
+which classified `concordance` with the same number.
+
+The **state vs state** family - the fraction contrast log2(Insoluble/Soluble) of one state
+against another - is what the percent-insoluble panels below are drawn from. A protein above
+the band moves further into the insoluble fraction in the state on the y axis.
+
+```{r}
+scatter_summary <- read_csv(paste0(rev_scatter_dir, "scatter_summary.csv"),
+                            show_col_types = FALSE)
+
+# Read back from Python so the drawn band and its counts stay in step; not `FC_CUTOFF`.
+stopifnot(length(unique(scatter_summary$fc_cutoff)) == 1)
+BAND_CUTOFF <- scatter_summary$fc_cutoff[1]
+BAND_FOLD <- 2 ^ BAND_CUTOFF
+stopifnot(abs(BAND_FOLD - 2) < 1e-9)
+scatter_summary %>%
+  select(kind, x_label, y_label, n_joined, pearson_r, pearson_r_percent, median_delta,
+         n_concordant, n_higher_on_x, n_higher_on_y)
+```
+
+`percent_insoluble/` holds the percent version of the state-vs-state family below.
+
+```{r}
+scatter_figure_path <- function(kind, fn_stem) {
+  dir <- paste0(rev_scatter_dir, "figures/", kind, "/")
+  dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+  paste0(dir, fn_stem)
+}
+```
+
+### The same comparison in % insoluble
+
+A state's soluble and insoluble shares sum to 100% by construction, so
+log2(Insoluble/Soluble) is only a reparameterisation of "% insoluble" - the state-vs-state
+family above and the barplot below already report one quantity on two scales. These panels
+draw that family on the barplot's scale, so the two figures can be read against each other
+directly.
+
+Nothing about the classification changes. On percent axes the `|delta| > BAND_CUTOFF` band is
+the odds curve
+
+```
+y / (100 - y) = 2 * x / (100 - x)
+```
+
+which the Python layer asserts the percent columns reproduce exactly, so the off-band protein
+set and every count is the same as in the log2 panels - only the axes differ. The band bends,
+so it is `geom_line` over a grid and not `geom_abline`; the identity line comes off the same
+grid to keep the two in one place.
+
+The axis is linear 0-100, the same scale the barplot uses. 77% of the 4823 proteins sit below
+20% insoluble, so the cloud is dense in the bottom-left corner - that density is the finding,
+not a plotting artefact, and reading it off the barplot's own axis is the point of the panel.
+
+The percent is the insoluble share of the *channel means*, while a barplot bar is the mean of
+the *per-channel shares*; `check_percent_agreement` reconciles the two (median 0.04 pp apart,
+worst 6.8 pp).
+
+```{r}
+# The 2-fold band on percent axes, and the identity line, as curves. `band_grid` stops
+# short of 0 and 100 because the odds are undefined at both ends.
+FC_RATIO <- BAND_FOLD
+band_grid <- tibble(x = seq(0.05, 99.95, length.out = 2000)) %>%
+  mutate(
+    odds = x / (100 - x),
+    up   = 100 * (FC_RATIO * odds) / (1 + FC_RATIO * odds),
+    down = 100 * (odds / FC_RATIO) / (1 + odds / FC_RATIO)
+  )
+
+plot_percent_insoluble_scatter <- function(x_label_in, y_label_in) {
+  info <- scatter_summary %>% filter(x_label == x_label_in, y_label == y_label_in)
+  stopifnot(nrow(info) == 1, info$kind == "state_vs_state")
+
+  concordance_cols <- setNames(
+    c("gray88", SIG_UP_COL, SIG_DOWN_COL),
+    c("Concordant", paste("Higher in", info$y_short), paste("Higher in", info$x_short))
+  )
+
+  fn_stem <- paste0(gsub("/", "_over_", x_label_in), " vs ",
+                    gsub("/", "_over_", y_label_in))
+  df <- read_csv(paste0(rev_scatter_dir, fn_stem, ".csv"), show_col_types = FALSE) %>%
+    mutate(concordance = factor(concordance, levels = names(concordance_cols)))
+  stopifnot(nrow(df) == info$n_joined,
+            !any(is.na(df$percent_insoluble_x)), !any(is.na(df$percent_insoluble_y)))
+
+  # One span for both axes so identity renders at 45 degrees, padded 6%.
+  span <- range(c(df$percent_insoluble_x, df$percent_insoluble_y))
+  span <- span + c(-1, 1) * diff(span) * 0.06
+  at <- function(f) span[1] + diff(span) * f
+
+  counts <- tibble(
+    x = c(at(0.04), at(0.04), at(0.96)),
+    y = c(at(0.96), at(0.88), at(0.04)),
+    label = c(paste0("R = ", sprintf("%.2f", info$pearson_r_percent)),
+              paste0(info$n_higher_on_y, " higher in ", info$y_short),
+              paste0(info$n_higher_on_x, " higher in ", info$x_short)),
+    hjust = c(0, 0, 1)
+  )
+
+  poi <- df %>% filter(protein_of_interest)
+  stopifnot(nrow(poi) == info$n_proteins_of_interest)
+
+  set.seed(12345)
+  plt <- ggplot(df, aes(x = percent_insoluble_x, y = percent_insoluble_y,
+                        fill = concordance)) +
+    geom_line(data = band_grid, aes(x = x, y = x), inherit.aes = FALSE,
+              linewidth = LINE_WIDTH, colour = UNCHANGED_COL) +
+    geom_line(data = band_grid, aes(x = x, y = up), inherit.aes = FALSE,
+              linetype = "dashed", linewidth = LINE_WIDTH, colour = "black") +
+    geom_line(data = band_grid, aes(x = x, y = down), inherit.aes = FALSE,
+              linetype = "dashed", linewidth = LINE_WIDTH, colour = "black") +
+    geom_point(data = df %>% filter(concordance == "Concordant"),
+               shape = 21, size = POINT_SIZE - 1.5, stroke = POINT_STROKE / 2,
+               colour = "gray88", alpha = 0.4) +
+    geom_point(data = df %>% filter(concordance != "Concordant"),
+               shape = 21, size = POINT_SIZE - 1.5, stroke = POINT_STROKE / 2,
+               colour = "gray55", alpha = 0.8) +
+    geom_text(data = counts, aes(x = x, y = y, label = label, hjust = hjust),
+              inherit.aes = FALSE, size = FONT_SIZE_MM, colour = "black") +
+    geom_point(data = poi, shape = 21, size = POINT_SIZE - 1.5,
+               stroke = POINT_STROKE / 2, colour = "black", alpha = 1) +
+    geom_text_repel(
+      data = poi, aes(x = percent_insoluble_x, y = percent_insoluble_y, label = protein),
+      inherit.aes = FALSE, size = FONT_SIZE_MM, colour = "black",
+      box.padding = 0.4, min.segment.length = 0, segment.size = LINE_WIDTH) +
+    scale_fill_manual(values = concordance_cols, drop = FALSE, name = NULL) +
+    coord_cartesian(xlim = span, ylim = span) +
+    labs(
+      x = paste0("% insoluble, ", info$x_short),
+      y = paste0("% insoluble, ", info$y_short)
+    ) +
+    my_theme() +
+    theme(
+      aspect.ratio = 1,
+      legend.title = element_blank(),
+      legend.position = "top",
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -0.8),
+      legend.key.spacing.x = unit(-0.05, "cm")
+    ) +
+    scale_x_continuous(breaks = seq(0, 100, 25)) +
+    scale_y_continuous(breaks = seq(0, 100, 25)) +
+    guides(fill = guide_legend(nrow = 1, override.aes = list(size = 1.6, alpha = 1)))
+
+  # Layers 1-3 are the identity line and the band, 4-5 the cloud, 6 the annotations,
+  # 7-8 the highlight. The folder carries the "percent insoluble" half of the name.
+  save_checked(plt, nrow(df), scatter_figure_path("percent_insoluble", fn_stem),
+               width = 3, height = 3.4, layers = 4:5)
+}
+```
+
+```{r fig.width=3, fig.height=3.4}
+state_pairs <- scatter_summary %>% filter(kind == "state_vs_state")
+for (i in seq_len(nrow(state_pairs))) {
+  plot_percent_insoluble_scatter(state_pairs$x_label[i], state_pairs$y_label[i])
+}
+```
+
+### Cysteine reactivity changes
+
+The same percent-insoluble family once more, this time coloured by whether a protein carries a
+cysteine reactivity change in `notebooks/03_reactivity`. The question is whether a protein whose
+cysteines changed reactivity also moved between the detergent fractions - the only panel in this
+document that reads another assay.
+
+Two categories, assigned in `solubility.py` (`load_reactivity_changes`) and carried into the
+scatter CSVs as `reactivity_change` / `reactivity_label`, so the R layer never restates the
+mapping:
+
+- **Reactivity change** - the union across D4A/D4C/D8A/D8C, 180 proteins, 136 detected here.
+  Unioned rather than state-matched: this run has no D4 states to match against, and a per-panel
+  highlight set would change the coloured points from panel to panel.
+- **Other** - the grey cloud.
+
+Labels come from `reactivity_named`: `REACTIVITY_NAMED_PROTEINS` in `solubility.py` - MAP2K3,
+MAP2K4, LONP1, HSPA9, PSMC5, DNAJA3, NDUFA9, VDAC1, eight in all. The named set is **not** a
+subset of the coloured category - some of the eight carry a reactivity change and some do not -
+so these labels are drawn in black rather than in the category colour, which would leave the
+rest grey on grey.
+
+```{r}
+# One viridis sample from the repo's categorical palette.
+reactivity_cols <- c(
+  "Reactivity change" = "#440154",
+  "Other"             = "gray88"
+)
+
+# One alpha for every point in this panel, highlighted or not. A highlighted point is a
+# member of the same cloud, so it is drawn at the cloud's opacity and picked out by its fill
+# and outline rather than by being the only solid mark on the panel.
+CLOUD_ALPHA <- 0.4
+
+plot_percent_insoluble_reactivity <- function(x_label_in, y_label_in) {
+  info <- scatter_summary %>% filter(x_label == x_label_in, y_label == y_label_in)
+  stopifnot(nrow(info) == 1, info$kind == "state_vs_state")
+
+  fn_stem <- paste0(gsub("/", "_over_", x_label_in), " vs ",
+                    gsub("/", "_over_", y_label_in))
+  df <- read_csv(paste0(rev_scatter_dir, fn_stem, ".csv"), show_col_types = FALSE) %>%
+    mutate(reactivity_label = factor(reactivity_label, levels = names(reactivity_cols)))
+  stopifnot(
+    nrow(df) == info$n_joined,
+    !any(is.na(df$reactivity_label)),
+    sum(df$reactivity_change) == info$n_reactivity_change,
+    sum(df$reactivity_named) == info$n_reactivity_named,
+    # The two categories partition the table; if they ever stopped doing so the layer split
+    # below would quietly draw a protein twice or not at all.
+    sum(df$reactivity_change) + sum(df$reactivity_label == "Other") == nrow(df)
+  )
+
+  span <- range(c(df$percent_insoluble_x, df$percent_insoluble_y))
+  span <- span + c(-1, 1) * diff(span) * 0.06
+  at <- function(f) span[1] + diff(span) * f
+
+  changed <- df %>% filter(reactivity_change)
+  named <- df %>% filter(reactivity_named)
+
+  # Both annotations stack in the top-left corner. The highlighted points here sit low on
+  # both axes, so a bottom-right count is repelled into by their labels.
+  annot <- tibble(
+    x = at(0.04),
+    y = c(at(0.96), at(0.89)),
+    hjust = 0,
+    label = c(paste0("R = ", sprintf("%.2f", info$pearson_r_percent)),
+              paste0(info$n_reactivity_change, " of ", info$n_reactivity_source,
+                     " reactivity-change proteins detected"))
+  )
+
+  set.seed(12345)
+  plt <- ggplot(df, aes(x = percent_insoluble_x, y = percent_insoluble_y,
+                        fill = reactivity_label)) +
+    geom_abline(slope = 1, intercept = 0, linewidth = LINE_WIDTH, colour = UNCHANGED_COL) +
+    # Reactivity-change points are a member of this cloud, not a separate population - same
+    # size/shape/alpha as the rest, just a black outline instead of gray55.
+    geom_point(data = df %>% filter(reactivity_label == "Other"),
+               shape = 21, size = POINT_SIZE - 1.5, stroke = POINT_STROKE / 2,
+               colour = "gray55", alpha = CLOUD_ALPHA) +
+    geom_point(data = changed, shape = 21, size = POINT_SIZE - 1.5,
+               stroke = POINT_STROKE / 2, colour = "black", alpha = CLOUD_ALPHA) +
+    geom_text(data = annot, aes(x = x, y = y, label = label, hjust = hjust),
+              inherit.aes = FALSE, size = FONT_SIZE_MM, colour = "black") +
+    # Labelled points redrawn opaque for a visible anchor - fill unchanged, adds nothing new
+    # to the drawn-point audit.
+    geom_point(data = named, shape = 21, size = POINT_SIZE - 1.5,
+               stroke = POINT_STROKE / 2, colour = "black", alpha = 1) +
+    geom_text_repel(
+      data = named, aes(x = percent_insoluble_x, y = percent_insoluble_y, label = protein),
+      inherit.aes = FALSE, size = FONT_SIZE_MM, colour = "black",
+      box.padding = 0.4, min.segment.length = 0, segment.size = LINE_WIDTH,
+      max.overlaps = Inf, seed = 12345) +
+    scale_fill_manual(values = reactivity_cols, drop = FALSE, name = NULL) +
+    coord_cartesian(xlim = span, ylim = span) +
+    labs(
+      x = paste0("% insoluble, ", info$x_short),
+      y = paste0("% insoluble, ", info$y_short)
+    ) +
+    my_theme() +
+    theme(
+      aspect.ratio = 1,
+      legend.title = element_blank(),
+      legend.position = "top",
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -0.8),
+      legend.key.spacing.x = unit(-0.05, "cm")
+    ) +
+    scale_x_continuous(breaks = seq(0, 100, 25)) +
+    scale_y_continuous(breaks = seq(0, 100, 25)) +
+    guides(fill = guide_legend(nrow = 1, override.aes = list(size = 1.6, alpha = 1)))
+
+  # Cloud split across layers 2-3; audit sums both since together they're every protein.
+  save_checked(plt, nrow(df), scatter_figure_path("percent_insoluble_reactivity", fn_stem),
+               width = 2, height = 2.2, layers = 2:3)
+}
+```
+
+```{r fig.width=2, fig.height=2.2}
+for (i in seq_len(nrow(state_pairs))) {
+  plot_percent_insoluble_reactivity(state_pairs$x_label[i], state_pairs$y_label[i])
+}
+```
+
+A `notes.txt` beside the three panels, on the same footing as the complex notes above: written
+from here so it regenerates with the figures, and duplicated into `README.md` because `data/` is
+gitignored.
+
+```{r}
+reactivity_note <- r"(Cysteine reactivity changes
+=================================================
+
+WHAT IS COLOURED
+136 of the 180 proteins carrying a cysteine reactivity change in notebooks/03_reactivity,
+unioned across D4A/D4C/D8A/D8C, joined on gene symbol.
+Labelled: MAP2K3, MAP2K4, LONP1, HSPA9, PSMC5, DNAJA3, NDUFA9, VDAC1 (REACTIVITY_NAMED_PROTEINS
+in solubility.py), eight in all.
+
+WHAT THE PANELS SHOW    (median percentage-point shift; background in brackets)
+Band = a 2-fold difference between the two contrasts.
+  D2  -> D8A   +2.21 pp   (+1.84)    14.0% off-band vs 11.8%   OR 1.22, p = 0.42
+  D2  -> D8C   -0.25 pp   (-0.40)     7.4% off-band vs  6.5%   OR 1.14, p = 0.72
+  D8A -> D8C   -1.99 pp   (-2.07)     5.9% off-band vs  7.9%   OR 0.73, p = 0.52
+
+INTERPRETATION
+Read this as a negative result. The reactivity-change group does not shift in a direction
+of its own in any panel - its median percentage-point shift is within a quarter of a point
+of the background in all three, and a Mann-Whitney on the shifts is far from significant
+everywhere (p = 0.40, 0.69, 0.84). Nor is it enriched for proteins that leave the band at
+all, in either direction: no panel comes near significance by Fisher, and the D8A -> D8C
+panel points the other way.
+
+A note on the band width, because it changed the conclusion. At the log2(1.5) band this
+family used previously, D2 -> D8A did show a nominal enrichment for off-band proteins
+(46.3% vs 36.2%, OR 1.52, p = 0.019). It does not survive the move to 2-fold (14.0% vs
+11.8%, OR 1.22, p = 0.42), which is what one would expect of an effect carried by the
+proteins sitting nearest the band edge. Do not quote the 1.5-fold number.
+
+CAVEATS
+The two assays measure different things on different peptides: a reactivity change is a
+cysteine-level call from TMT-ABPP, solubility is a protein-level fraction ratio. A protein
+can change reactivity at one cysteine with no change in where the bulk of it partitions,
+and the panel would show exactly what it shows.
+The union across conditions mixes D4 and D8 timepoints into a highlight set drawn on D2/D8
+axes; a state-matched set was considered and rejected because it changes the coloured
+points from panel to panel, but it does mean the highlight is not timepoint-specific.
+Equal protein mass was labelled from each fraction and this run has no Final dilution
+factor, so a shift in insoluble share is a position relative to the rest of the pellet,
+not a literal claim about how much protein is insoluble.
+)"
+
+writeLines(reactivity_note,
+           paste0(rev_scatter_dir, "figures/percent_insoluble_reactivity/notes.txt"))
+cat("wrote percent_insoluble_reactivity/notes.txt\n")
+```
+
+## Proteins of interest
+
+The manuscript's eight proteins: `PROTEINS_OF_INTEREST` plus PSMC5, one of the 19S regulatory
+ATPase subunits.
+
+Each state's soluble and insoluble share, which sum to 100% by construction. Every replicate
+channel is plotted: four points per bar, drawn as plain circles - two donors x two TMT
+duplicates. Soluble duplicate `i` is paired with insoluble duplicate `i` of the same donor,
+the only pairing available across fractions.
+
+The error bar is the SE of those four points. Two of every four are technical duplicates, so
+it is an SE over channels, not over donors, and understates donor-to-donor variability; the
+points are not shape-coded by donor, so that spread is not resolved visually here.
+
+**This is a relative display.** Equal protein *mass* was labelled from each fraction and no
+Final dilution factor exists for these runs, so the channel ratio reports a protein's share
+within its own fraction. A 90% soluble bar does not mean 90% of the protein is soluble; it
+means the protein sits that much higher in the soluble fraction's distribution than in the
+insoluble fraction's. Compare bars across states, not against 50.
+
+As with the scatterplots, the panels get their own folder: `both_fractions/` for the pair
+of bars below.
+
+```{r}
+barplot_figure_path <- function(kind, fn_stem) {
+  dir <- paste0(rev_barplot_dir, "figures/", kind, "/")
+  dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+  paste0(dir, fn_stem)
+}
+```
+
+```{r}
+# `name` is the key `fraction_shares` wrote the CSV under; `proteins` fixes the facet order.
+# A panel that lost a subunit or a channel fails here rather than drawing short.
+read_panel_shares <- function(name, proteins) {
+  shares <- read_csv(paste0(rev_barplot_dir, "fraction_shares_", name, ".csv"),
+                     show_col_types = FALSE) %>%
+    mutate(
+      group = factor(group, levels = group_levels),
+      state = factor(state, levels = c("D2", "D8A", "D8C")),
+      fraction = factor(fraction, levels = c("Soluble", "Insoluble")),
+      protein = factor(protein, levels = proteins),
+      donor = factor(donor, levels = names(donor_shapes))
+    )
+
+  stopifnot(!any(is.na(shares$group)), !any(is.na(shares$protein)),
+            !any(is.na(shares$donor)))
+  stopifnot(setequal(levels(droplevels(shares$protein)), proteins),
+            nrow(shares) <= length(proteins) * 3 * 2 * 4)
+
+  # TMT non-detections: a share is NaN in both fractions or neither (shared denominator), so
+  # dropping them leaves whole pairs and `save_checked` gets an exact point count.
+  missing <- shares %>% filter(is.na(percent))
+  if (nrow(missing) > 0) {
+    message(name, ": dropping ", nrow(missing), " non-detected channel(s): ",
+            paste(missing$protein, missing$group, missing$replicate, collapse = "; "))
+    shares <- shares %>% filter(!is.na(percent))
+  }
+  # Whatever was dropped, both donors must still stand behind every protein x group.
+  stopifnot(nrow(count(shares, protein, group, donor)) == length(proteins) * 6 * 2)
+
+  # Every protein x state x channel must total 100 across the two fractions.
+  shares %>%
+    group_by(protein, state, replicate) %>%
+    summarise(total = sum(percent), .groups = "drop") %>%
+    pull(total) %>%
+    {stopifnot(all(abs(. - 100) < 1e-6))}
+
+  shares
+}
+
+panel_stats <- function(shares) {
+  shares %>%
+    group_by(protein, state, fraction, group) %>%
+    summarise(n = n(), mean = mean(percent), sd = sd(percent), .groups = "drop") %>%
+    mutate(se = sd / sqrt(n))
+}
+
+insoluble_table <- function(stats) {
+  stats %>% filter(fraction == "Insoluble") %>%
+    select(protein, state, mean, se) %>%
+    pivot_wider(names_from = state, values_from = c(mean, se)) %>%
+    mutate(across(where(is.numeric), ~ round(.x, 1)))
+}
+
+poi_shares <- read_panel_shares("proteins_of_interest", BARPLOT_PANEL)
+poi_stats <- panel_stats(poi_shares)
+
+insoluble_table(poi_stats)
+```
+
+```{r fig.width=4, fig.height=2}
+# ~0.8in per facet column plus ~0.7in for the right-hand legend, at `legend_theme()`'s key size.
+plot_poi_barplot <- function(shares, stats, out_name = "proteins_of_interest",
+                             width = 4, height = 2, nrow = 2) {
+  dodge <- position_dodge(width = 0.8)
+  set.seed(20260826)  # reproducible point jitter
+
+  plt <- ggplot(shares, aes(x = state, y = percent, fill = group)) +
+    # 0.6 against a 0.8 dodge, as in the dodged faceted bargraph of
+    # notebooks/04_metabolomics - not the shared BARPLOT_WIDTH, which is 0.75 and leaves the
+    # soluble and insoluble bars of a state touching.
+    geom_bar(stat = "summary", fun = "mean", width = 0.6, alpha = 0.8,
+             position = dodge, colour = "black", linewidth = LINE_WIDTH,
+             show.legend = TRUE) +
+    geom_errorbar(
+      data = stats,
+      mapping = aes(x = state, ymin = mean - se, ymax = mean + se, group = group),
+      inherit.aes = FALSE, position = dodge, width = 0.3, linewidth = LINE_WIDTH) +
+    # `group = group` pins points to their own bar - without it position_dodge splits each
+    # bar's points into offset columns.
+    geom_point(aes(group = group), shape = 21,
+               size = POINT_SIZE - 1.6, stroke = POINT_STROKE / 2, colour = "black",
+               position = position_jitterdodge(jitter.width = 0.35, jitter.height = 0,
+                                               dodge.width = 0.8)) +
+    scale_fill_manual(values = solubility_fills, drop = FALSE) +
+    # Shares run 0-100 by construction, so a fixed range is safe; expand only upward for
+    # the error bars.
+    coord_cartesian(ylim = c(0, 105)) +
+    scale_y_continuous(breaks = seq(0, 100, 25), expand = c(0, 0)) +
+    facet_wrap(~protein, nrow = nrow) +
+    labs(x = NULL, y = "% of state total") +
+    my_theme() +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(size = FONT_SIZE, family = FONT_FAMILY, colour = "black"),
+      panel.spacing = unit(1, "mm"),
+      panel.border = element_blank(),
+      axis.line.x = AXIS_LINE,
+      axis.line.y = AXIS_LINE,
+      legend.title = element_blank(),
+      legend.position = "right",
+      legend.key = element_blank(),
+      legend.key.size = unit(0.2, "cm"),
+      legend.margin = margin(l = -5, b = -4.5),
+      legend.box.margin = margin(l = -5, b = -5.7),
+      # NOT `legend_theme()`'s `margin(l = -5)`: at this key size the swatch is only 5.3pt
+      # wide and `l = -5` lands the text almost inside it.
+      legend.text = element_text(size = FONT_SIZE, colour = "black",
+                                 family = FONT_FAMILY, margin = margin(l = 1)),
+      plot.margin = margin(t = 1, r = 1, b = 1, l = 1)
+    ) +
+    guides(fill = guide_legend(override.aes = list(shape = NA)))
+
+  # Layer 3 is the channel points: one per row of `shares`, i.e. proteins x 3 states x 2
+  # fractions x 2 donors x 2 TMT duplicates.
+  save_checked(plt, nrow(shares), barplot_figure_path("both_fractions", out_name),
+               width = width, height = height, layers = 3)
+}
+
+plot_poi_barplot(poi_shares, poi_stats, width = 4, height = 2, nrow = 2)
+```
+
+## GSEA
+
+Same pre-ranked GO:BP analysis as HK3-124, on the three fraction contrasts of the revision
+run. Positive NES = enriched among proteins gaining intensity in the insoluble fraction.
+
+```{r fig.width=3.5, fig.height=4}
+for (state in c("D2", "D8A", "D8C")) {
+  plot_gsea(state, dir = rev_gsea_dir)
+}
+```
+
+## Verification
+
+```{r}
+stopifnot(all(
+  rev_protein_counts$n_tested +
+    rev_protein_counts$n_dropped_group_too_small +
+    rev_protein_counts$n_dropped_other == rev_protein_counts$n_input
+))
+stopifnot(nrow(rev_volcano_data) == sum(rev_protein_counts$n_tested))
+
+rev_volcano_data %>%
+  left_join(rev_family_limits, by = "family") %>%
+  summarise(
+    outside_x = sum(log2_FC < x_lo | log2_FC > x_hi),
+    outside_y = sum(neg_log10_pval < y_lo | neg_log10_pval > y_hi)
+  ) -> rev_outside
+stopifnot(rev_outside$outside_x == 0, rev_outside$outside_y == 0)
+
+# All seven proteins of interest must survive the two-donor filter and appear in every
+# comparison.
+poi_present <- rev_volcano_data %>%
+  filter(protein %in% PROTEINS_OF_INTEREST) %>%
+  count(condition, control_condition)
+stopifnot(all(poi_present$n == length(PROTEINS_OF_INTEREST)))
+
+rev_protein_counts %>%
+  select(condition, control_condition, n_input, n_tested,
+         n_significant_up, n_significant_down, median_log2_FC)
+```
