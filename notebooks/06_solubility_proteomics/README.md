@@ -98,12 +98,11 @@ verbatim from `bin/analysis_utils.py` and `low_input.py` but re-implemented loca
 the goatools dependency. Volcanoes are 2.75 x 2.9 in, not the repo's 2 x 4 in: the axis label
 carries two `<state>-<fraction>` names and clips at 2 in.
 
-`supp_data/Data S4_20260817.xlsx` reports the normalized data and all nine comparisons:
-`S4-1` is the normalized channel ratio matrix, `S4-2` the fraction comparisons, `S4-3`/`S4-4`
-the state comparisons within each fraction, each contributing log2_FC, p_value, p_adj and
-Regulation columns. Every sheet carries the UniProt FUNCTION comment, queried with
-`unipressed` and cached to `uniprot_functions.csv`; contaminant and keratin rows are dropped
-as in `low_input.write_percent_control_to_excel`, leaving 5328 proteins.
+**This run ships no supplementary table.** It used to be written as `Data S4`, a four-sheet
+workbook of the normalized matrix plus all nine comparisons; the assay's supplementary table
+is now the single `Data S2-6` sheet built from the revision run (see its Outputs section
+below), so `write_supplementary_excel` and the `Data S4` cells are gone. The HK3-124 numbers
+here remain the reference the revision reproduces.
 
 `volcano_protein_counts.csv` is the protein-count audit, asserted in both layers: `n_tested +
 n_dropped_group_too_small + n_dropped_other == n_input` per comparison (0 to 4 proteins drop
@@ -336,14 +335,19 @@ across states, not against 50.
 
 ## Proteins of interest
 
-One panel, one CSV, written by `fraction_shares` from `BARPLOT_PROTEIN_SETS`:
+Two panels, two CSVs, written by `fraction_shares` from `BARPLOT_PROTEIN_SETS`:
 
 | panel | CSV | proteins |
 |---|---|---|
 | manuscript panel | `fraction_shares_proteins_of_interest.csv` | MAP2K3, MAP2K4, LONP1, HSPA9, PSMC5, DNAJA3, NDUFA9, VDAC1 |
+| positive controls | `fraction_shares_positive_controls.csv` | GZMB, HSP90B1, PRF1 |
 
-The panel is `PROTEINS_OF_INTEREST` plus PSMC5, one of the 19S regulatory ATPase subunits -
-that is the only difference between the two lists. GZMB is intentionally excluded.
+The manuscript panel is `PROTEINS_OF_INTEREST` plus PSMC5, one of the 19S regulatory ATPase
+subunits - that is the only difference between the two lists. GZMB is intentionally excluded
+from it and instead drawn on its own, alongside HSP90B1 and PRF1, as the positive-controls
+panel: GZMB was on the label set before the revision, and HSP90B1/PRF1 are ER- and
+secretory-granule-anchored proteins with well-characterised solubility behaviour, so that
+panel is a sanity check rather than a manuscript figure.
 
 `fraction_shares.csv` gives each protein's soluble and insoluble share of its state's total,
 one row per replicate channel, so the two bars of a state sum to 100%. Soluble duplicate `i`
@@ -406,10 +410,35 @@ The file name is the same in each, since the folder says which panel it is.
 figures, holding the reading above so it survives `data/` being untracked, plus three `.html`
 files, the interactive companions written by `run_reactivity_html` from the Python layer.
 
-`supp_data/Data S4b_20260826.xlsx` mirrors `Data S4`: `S4b-1` the filtered channel ratio
-matrix, `S4b-2` the fraction comparisons, `S4b-3`/`S4b-4` the state comparisons within each
-fraction, every sheet annotated with the UniProt FUNCTION comment. Contaminant and keratin
-rows are dropped, leaving 4822 proteins.
+## Supplementary table: Data S2-6
+
+The assay's supplementary table is a **single sheet of `Data S2`**, `S2-6`, written by
+`write_percent_insoluble_excel` to `supp_data/Data S2-6_solubility.xlsx`. It replaces the
+former `Data S4` / `Data S4b` workbooks, which carried the channel ratio matrix and all nine
+comparisons; the sheet now reports only what the figures read.
+
+One row per protein, 4822 x 19: `protein`, `uniprot`, `description`, `uniprot_function`, then
+the twelve `<state>_<donor>_<duplicate>` percent-insoluble channels (`D2_d1_1` ... `D8C_d2_2`)
+and `D2 median` / `D8A median` / `D8C median`. The channel naming matches the low-input sheets
+either side of it in `Data S2`.
+
+The percent is taken straight from `fraction_shares` rather than recomputed, so the sheet, the
+barplots and the percent-insoluble scatterplots are one quantity on one scale. Medians are over
+the four channels of a state; 336 of the 57864 channels are missing where converting a TMT zero
+to `NaN` left no value (268 proteins, no state left without a median). Contaminant and keratin
+rows are dropped as in `low_input.write_percent_control_to_excel`, leaving 4822 of 4823, and
+4590 of those carry a UniProt FUNCTION comment, read from the `uniprot_functions.csv` cache.
+
+**The relative-share caveat applies to the sheet as it does to the barplot**: equal protein
+mass was labelled from each fraction and this run has no Final dilution factor, so "10%
+insoluble" is a relative position, not a literal tenth. The sheet's description row says so.
+
+`S2_6_SHEET`, `S2_6_TITLE` and `S2_6_DESCRIPTION` in `solubility.py` hold the tab name and the
+sheet's row-1/row-2 text; they are placeholder wording pending the manuscript's own.
+
+Inserting this sheet at position 6 shifts the rest of `Data S2` up by one - the former `S2-6
+ATP add-back` becomes `S2-7`, and the four low-input sheets become `S2-8` through `S2-11`. The
+renumbered workbook is assembled by `bin/renumber_data_s2.py`.
 
 ## Code
 

@@ -75,9 +75,16 @@ BARPLOT_PANEL = [
     "VDAC1",
 ]
 
+# Positive controls: proteins with well-characterised solubility behaviour, drawn as their
+# own panel rather than folded into the manuscript's eight. GZMB is the same granzyme that
+# was on PROTEINS_OF_INTEREST before the revision (see comment above); HSP90B1 and PRF1 are
+# the ER/secretory-granule anchors.
+POSITIVE_CONTROLS = ["GZMB", "HSP90B1", "PRF1"]
+
 # `fraction_shares` writes one CSV per entry, as `fraction_shares_<key>.csv`.
 BARPLOT_PROTEIN_SETS = {
     "proteins_of_interest": BARPLOT_PANEL,
+    "positive_controls": POSITIVE_CONTROLS,
 }
 
 
@@ -819,8 +826,8 @@ def run_scatters(long_df, out_dir, pairs=None, proteins_of_interest=None,
 # figures - the SVG/PNG panels remain the output of record. Follows bin/analysis_utils.py:
 # plotly express, `template="plotly_white"`, plotly.js from the CDN.
 
-# The UniProt FUNCTION cache `write_supplementary_excel` leaves behind - read directly, not via
-# `uniprot_functions()`, which re-queries the whole set if any single accession is missing.
+# The UniProt FUNCTION cache `write_percent_insoluble_excel` leaves behind - read directly,
+# not via `uniprot_functions()`, which re-queries the whole set if one accession is missing.
 UNIPROT_FUNCTIONS_CSV = "uniprot_functions.csv"
 
 # Characters per line for hover text; plotly does not wrap hover labels itself.
@@ -1032,7 +1039,7 @@ def run_reactivity_html(long_df, scatter_dir, functions_csv=None, reactivity_pro
         else Path(functions_csv)
     )
     assert functions_csv.exists(), (
-        f"{functions_csv} not found - run write_supplementary_excel first, which builds it"
+        f"{functions_csv} not found - run write_percent_insoluble_excel first, which builds it"
     )
     functions = pd.read_csv(functions_csv, keep_default_na=False)
     detail = reactivity_hover_detail()
@@ -1396,87 +1403,96 @@ def uniprot_functions(df, cache_csv=None):
     return functions
 
 
-def _comparison_columns(long_df, comparisons):
-    """Widen the long volcano table: four columns per comparison, keyed on uniprot."""
-    wide = None
-    for condition, control, _ in comparisons:
-        label = f"{condition}/{control}"
-        sub = long_df[
-            (long_df["condition"] == condition)
-            & (long_df["control_condition"] == control)
-        ].copy()
-        # The stored column is -log10(BH-adjusted p); report the adjusted p itself.
-        sub[f"{label} p_adj"] = 10 ** (-sub["neg_log10_pval_adj"])
-        sub = sub[
-            ["uniprot", "log2_FC", "p_value", f"{label} p_adj", "Regulation"]
-        ].rename(
-            columns={
-                "log2_FC": f"{label} log2_FC",
-                "p_value": f"{label} p_value",
-                "Regulation": f"{label} Regulation",
-            }
-        )
-        wide = sub if wide is None else wide.merge(sub, on="uniprot", how="outer")
-    return wide
+# The Data S2 sheet this table ships as. `S2_6_TITLE` becomes row 1 of the sheet and the
+# `contents` entry; `S2_6_DESCRIPTION` becomes row 2. Both are placeholder wording - edit
+# them here and nowhere else.
+S2_6_SHEET = "S2-6 Detergent solubility"
+S2_6_TITLE = (
+    "S2-6 Detergent solubility proteomics (TMT-exp) of activated, acutely, and "
+    "chronically stimulated human T cells"
+)
+S2_6_DESCRIPTION = (
+    "Percent of each protein recovered in the detergent-insoluble fraction, per replicate "
+    "channel, with the median per cell state. Shares are relative: equal protein mass was "
+    "labelled from each fraction, so compare across states rather than against 50."
+)
+
+# Front columns, in the order the S2-8..S2-11 low-input sheets use - `protein` first, not
+# `uniprot`. Deliberately not ID_COLS order, so S2-6 matches its neighbours in Data S2.
+SUPP_FRONT_COLS = ["protein", "uniprot", "description", "uniprot_function"]
 
 
-def write_supplementary_excel(
-    normalized,
-    long_df,
-    out_path,
-    cache_csv=None,
-    sheet_prefix="S4",
-    matrix_sheet_name="Normalized channel ratios",
-):
-    """Write the Data S-style workbook for the normalized data and all 9 comparisons.
+def percent_insoluble_table(shares, cfg=REVISION, cache_csv=None):
+    """Percent insoluble per replicate channel, plus the median per cell state.
 
-    Sheet 1 is the normalized channel ratio matrix; sheets 2-4 carry the comparisons,
-    grouped into the same families used for the volcano axis ranges. Every sheet is keyed
-    on the same id columns and annotated with the UniProt FUNCTION comment.
+    `shares` is what `fraction_shares` returns, so the percent itself is never recomputed
+    here - this only selects the insoluble half, widens it and adds the medians.
+
+    Replicate columns are `<state>_<replicate>` (`D2_d1_1`, ...), matching the
+    `<condition>_<donor>_<duplicate>` naming of the low-input sheets alongside it in Data S2.
+
+    CAVEAT: equal protein MASS was labelled per fraction and the revision run has no Final
+    dilution factor, so a share is a relative position, not "X% of the protein is insoluble".
+    """
+    insoluble = drop_contaminants(shares[shares["fraction"] == "Insoluble"]).copy()
+
+    # Pivot on `uniprot` alone: it is one row per protein here, and a multi-column index
+    # would make pandas build the cartesian product of all three id columns.
+    ids = insoluble[ID_COLS].drop_duplicates(subset="uniprot").set_index("uniprot")
+
+    insoluble["channel"] = insoluble["state"] + "_" + insoluble["replicate"]
+    replicate_cols = [f"{state}_{rep}" for state in STATES for rep in cfg.replicates]
+    wide = insoluble.pivot(index="uniprot", columns="channel", values="percent").reindex(
+        columns=replicate_cols
+    )
+
+    medians = (
+        insoluble.groupby(["uniprot", "state"])["percent"]
+        .median()
+        .unstack("state")
+        .reindex(columns=STATES)
+        .rename(columns={state: f"{state} median" for state in STATES})
+    )
+
+    table = ids.join(wide).join(medians).reset_index()
+
+    functions = uniprot_functions(table, cache_csv=cache_csv)
+    table = table.merge(functions, on="uniprot", how="left")
+    table = table[SUPP_FRONT_COLS + [c for c in table.columns if c not in SUPP_FRONT_COLS]]
+
+    # Each median must sit inside its own state's replicate range; a median landing outside
+    # would mean the two pivots disagreed about which channels belong to which state.
+    for state in STATES:
+        reps = table[[f"{state}_{rep}" for rep in cfg.replicates]]
+        median = table[f"{state} median"]
+        within = (median >= reps.min(axis=1) - 1e-9) & (median <= reps.max(axis=1) + 1e-9)
+        assert within[median.notna()].all(), f"{state} median outside its replicate range"
+
+    return table
+
+
+def write_percent_insoluble_excel(shares, out_path, cfg=REVISION, cache_csv=None):
+    """Write the Data S2-6 sheet: percent insoluble per channel and per-state medians.
+
+    One sheet, styled as in low_input.write_percent_control_to_excel. Contaminant and
+    keratin rows are dropped, and every row carries the UniProt FUNCTION comment.
     """
     import polars as pl
+    import xlsxwriter
+
+    table = percent_insoluble_table(shares, cfg=cfg, cache_csv=cache_csv)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    normalized = drop_contaminants(normalized)
-    functions = uniprot_functions(normalized, cache_csv=cache_csv)
-
-    def annotate(df):
-        df = df.merge(functions, on="uniprot", how="left")
-        front = ID_COLS + ["uniprot_function"]
-        return df[front + [c for c in df.columns if c not in front]]
-
-    ratios = annotate(normalized)
-
-    long_df = long_df[long_df["uniprot"].isin(set(normalized["uniprot"]))]
-    ids = normalized[ID_COLS]
-
-    sheets = {
-        f"{sheet_prefix}-1 {matrix_sheet_name}": ratios,
-    }
-    for name, contrast_types in [
-        (f"{sheet_prefix}-2 Fraction comparisons", ["fraction"]),
-        (f"{sheet_prefix}-3 Soluble comparisons", ["state_soluble"]),
-        (f"{sheet_prefix}-4 Insoluble comparisons", ["state_insoluble"]),
-    ]:
-        comparisons = [c for c in COMPARISONS if c[2] in contrast_types]
-        wide = _comparison_columns(long_df, comparisons)
-        sheets[name] = annotate(ids.merge(wide, on="uniprot", how="left"))
-
-    import xlsxwriter
-
-    # One workbook handle shared across sheets, so all four land in a single file with the
-    # styling used by low_input.write_percent_control_to_excel.
     workbook = xlsxwriter.Workbook(out_path, {"nan_inf_to_errors": True})
-    for sheet_name, table in sheets.items():
-        pl.from_pandas(table).write_excel(
-            workbook=workbook,
-            worksheet=sheet_name,
-            table_style="Table Style Light 8",
-            column_widths=150,
-            freeze_panes=(1, 1),
-        )
+    pl.from_pandas(table).write_excel(
+        workbook=workbook,
+        worksheet=S2_6_SHEET,
+        table_style="Table Style Light 8",
+        column_widths=150,
+        freeze_panes=(1, 1),
+    )
     workbook.close()
 
-    return sheets
+    return table

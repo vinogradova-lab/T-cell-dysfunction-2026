@@ -371,9 +371,13 @@ PROTEINS_OF_INTEREST <- c("MAP2K3", "MAP2K4", "LONP1", "HSPA9",
                           "DNAJA3", "NDUFA9", "VDAC1")
 
 # The barplot panel, mirroring `BARPLOT_PROTEIN_SETS` in solubility.py: `PROTEINS_OF_INTEREST`
-# plus PSMC5. GZMB is intentionally excluded.
+# plus PSMC5. GZMB is intentionally excluded from this panel (it's drawn separately below).
 BARPLOT_PANEL <- c("MAP2K3", "MAP2K4", "LONP1", "HSPA9", "PSMC5",
                    "DNAJA3", "NDUFA9", "VDAC1")
+
+# Positive controls: proteins with well-characterised solubility behaviour, drawn as their
+# own panel rather than folded into the manuscript's eight.
+POSITIVE_CONTROLS <- c("GZMB", "HSP90B1", "PRF1")
 
 # Shared donor shape scale: circle = d1, square = d2, everywhere in this section.
 donor_shapes <- c("d1" = 21, "d2" = 22)
@@ -837,6 +841,12 @@ insoluble fraction's. Compare bars across states, not against 50.
 As with the scatterplots, the panels get their own folder: `both_fractions/` for the pair
 of bars below.
 
+**Positive controls.** `POSITIVE_CONTROLS` (GZMB, HSP90B1, PRF1) get their own panel rather
+than joining the manuscript's eight - GZMB was on the label set before the revision, and
+HSP90B1/PRF1 are ER- and secretory-granule-anchored proteins with well-characterised
+solubility behaviour, so the panel is a sanity check rather than a manuscript figure. Same
+construction as above, one row of three facets.
+
 ```{r}
 barplot_figure_path <- function(kind, fn_stem) {
   dir <- paste0(rev_barplot_dir, "figures/", kind, "/")
@@ -903,6 +913,11 @@ poi_shares <- read_panel_shares("proteins_of_interest", BARPLOT_PANEL)
 poi_stats <- panel_stats(poi_shares)
 
 insoluble_table(poi_stats)
+
+pc_shares <- read_panel_shares("positive_controls", POSITIVE_CONTROLS)
+pc_stats <- panel_stats(pc_shares)
+
+insoluble_table(pc_stats)
 ```
 
 ```{r fig.width=4, fig.height=2}
@@ -965,6 +980,15 @@ plot_poi_barplot <- function(shares, stats, out_name = "proteins_of_interest",
 }
 
 plot_poi_barplot(poi_shares, poi_stats, width = 4, height = 2, nrow = 2)
+```
+
+```{r fig.width=4, fig.height=1.07}
+# height chosen so the single facet row here matches the main panel's per-row height exactly
+# (measured from each plot's gtable: main panel's panel rows are `null`-unit and split 2 - 0.61
+# fixed in = 0.69 in/row; this panel has only one strip row so its fixed component is smaller,
+# 0.37 in - solving `0.69*1 + 0.37` gives 1.07, not half of the main panel's total height).
+plot_poi_barplot(pc_shares, pc_stats, out_name = "positive_controls",
+                 width = 4, height = 1.07, nrow = 1)
 ```
 
 ## GSEA
