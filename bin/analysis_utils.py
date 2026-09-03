@@ -15,13 +15,6 @@ import scipy.stats as stat
 import plotly.express as px
 import math
 
-from genes_ncbi_9606_proteincoding import GENEID2NT
-from goatools.anno.genetogo_reader import Gene2GoReader
-from goatools.go_search import GoSearch
-from goatools.base import download_go_basic_obo
-from goatools.base import download_ncbi_associations
-from goatools.obo_parser import GODag
-
 
 color_discrete_map = {
     "Significant Up": "#ff8080",
@@ -167,6 +160,15 @@ def query_gene_ontology(
     """Text search of gene ontology. Based on GOATOOLS tutorial
     https://github.com/tanghaibao/goatools/blob/main/notebooks/cell_cycle.ipynb
     """
+    import re
+
+    from genes_ncbi_9606_proteincoding import GENEID2NT
+    from goatools.anno.genetogo_reader import Gene2GoReader
+    from goatools.go_search import GoSearch
+    from goatools.base import download_go_basic_obo
+    from goatools.base import download_ncbi_associations
+    from goatools.obo_parser import GODag
+
     output_path.mkdir(exist_ok=True)
     gene2go = download_ncbi_associations()
     go_basic = download_go_basic_obo()

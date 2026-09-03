@@ -8,8 +8,10 @@ Compares detergent-soluble vs detergent-insoluble fractions across T cell states
   REVISION - combined HK3-129 (12-plex) + HK3-130 (16-plex) run; replicate unit is the
              DONOR (d1/d2), each with two TMT duplicates, so four channels per group.
 
-Statistical functions and PCA are copied verbatim from bin/analysis_utils.py (as in
-notebooks/05_low_input_proteomics/low_input.py) so this module avoids the goatools import.
+`get_p_value`/`get_expr` are imported directly from bin/analysis_utils.py (its goatools
+import is local to query_gene_ontology, so importing the module doesn't require goatools).
+`get_pca_plot` below is a local adaptation, not a copy, of analysis_utils.get_pca_plot -
+it drops the plotly figure and returns extra state/fraction columns this assay needs.
 
 Figures are drawn in solubility_visualization.Rmd from the CSVs this module writes, except
 `run_reactivity_html`, which writes an interactive plotly companion for exploration.
@@ -18,12 +20,16 @@ Figures are drawn in solubility_visualization.Rmd from the CSVs this module writ
 from dataclasses import dataclass
 from pathlib import Path
 import math
+import sys
 import textwrap
 
 import numpy as np
 import pandas as pd
 import scipy.stats as stat
 from sklearn.decomposition import PCA
+
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "bin"))
+from analysis_utils import get_p_value, get_expr
 
 # --------------------------------------------------------------------------------------
 # Source data
@@ -345,39 +351,6 @@ def two_donor_filter(df, cfg=REVISION, out_dir=None, proteins_of_interest=None):
         poi_audit.to_csv(out_dir / "two_donor_filter_proteins_of_interest.csv", index=False)
 
     return df[keep].reset_index(drop=True), audit
-
-
-# --------------------------------------------------------------------------------------
-# Statistics - copied verbatim from bin/analysis_utils.py
-# --------------------------------------------------------------------------------------
-
-
-def get_p_value(row, cond_1, cond_2):
-    ttest_result = stat.ttest_ind(row[cond_1], row[cond_2], nan_policy="omit")
-    return ttest_result[1]
-
-
-def get_expr(row):
-    """define regulation of row based on fold change and p value"""
-    p_value = row["-log10_pval"]
-    p_value_cutoff = -1 * math.log10(0.05)
-    fc_cutoff = math.log2(1.5)
-    if (row["log2_FC"] > fc_cutoff) & (p_value > p_value_cutoff):
-        return "Significant Up"
-    if (row["log2_FC"] > fc_cutoff) & (p_value < p_value_cutoff):
-        return "Not Significant Up"
-    if (row["log2_FC"] < -fc_cutoff) & (p_value > p_value_cutoff):
-        return "Significant Down"
-    if (row["log2_FC"] < -fc_cutoff) & (p_value < p_value_cutoff):
-        return "Not Significant Down"
-    if (
-        (row["log2_FC"] > -fc_cutoff)
-        & (row["log2_FC"] < fc_cutoff)
-        & (p_value > p_value_cutoff)
-    ):
-        return "Significant but <1.5 FC"
-    else:
-        return "Not Significant"
 
 
 # --------------------------------------------------------------------------------------
@@ -1174,7 +1147,8 @@ def check_percent_agreement(shares, long_df, out_dir=None, tolerance_pp=10.0):
 
 
 # --------------------------------------------------------------------------------------
-# PCA - copied from bin/analysis_utils.py::get_pca_plot, minus the throwaway plotly figure
+# PCA - local adaptation of bin/analysis_utils.py::get_pca_plot, minus the throwaway
+# plotly figure and with extra state/fraction columns this assay needs
 # --------------------------------------------------------------------------------------
 
 
