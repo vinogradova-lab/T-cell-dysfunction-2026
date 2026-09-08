@@ -818,6 +818,145 @@ writeLines(reactivity_note,
 cat("wrote percent_insoluble_reactivity/notes.txt\n")
 ```
 
+### ATP-sensitive sites
+
+The same three panels once more, this time coloured by whether a protein carries a cysteine
+that ATP protects from labelling in the add-back experiment (`## ATP add back` in
+`notebooks/03_reactivity`). The question is the sibling of the one above - a reactivity change
+says a cysteine's labelling moved between cell states, ATP sensitivity says it moves when ATP
+is added back to the lysate - and the two highlight sets overlap without either containing the
+other.
+
+Assigned in `solubility.py` (`load_atp_sensitive_proteins`) and carried into the same scatter
+CSVs as `atp_sensitive` / `atp_label`, so as with the panel above the R layer restates nothing.
+`write_atp_sensitive_table` also stacks the three panels' rows into
+`scatterplots/percent_insoluble_atp_sensitive.csv`, narrowed to the label and the two
+percentages - the readable version of what these panels draw, for looking at outside the figure:
+
+- **ATP sensitive** - the +/- ATP median ratio below 0.5, i.e. 2-fold lower labelling with ATP
+  present, unioned across D2/D8A/D8C. 143 cysteine sites in 116 proteins, 102 of them detected
+  here. The add-back experiment calls regulation on fold change alone with no p-value; that is
+  its convention and `load_atp_sensitive_proteins` reads its calls rather than re-deriving
+  them.
+- **Other** - the grey cloud.
+
+Two caveats carry over from the reactivity panel and one is new. The sites are rolled up to
+gene symbols because solubility is a protein-level fraction ratio with no cysteine to match
+against, so a protein is coloured if *any* of its cysteines is ATP sensitive. The union across
+states is drawn on state-specific axes for the same reason as above - a per-panel highlight set
+would change the coloured points from panel to panel. And the three states here *are* this
+assay's three states, unlike the reactivity set's D4/D8 mix, so the union is at least drawn over
+the same states it was called on.
+
+Labels come from `atp_named`: `ATP_NAMED_PROTEINS` in `solubility.py` - MAP2K3, MAP2K4, LONP1,
+HSPA9, PSMC5, the five of the panel above's eight that are themselves ATP sensitive. Unlike
+`reactivity_named` this set **is** a subset of the coloured category, which the `stopifnot`
+below asserts; the labels stay black rather than the category colour to match the sibling panel
+and because black reads better than `#21918c` at this size.
+
+```{r}
+# A second viridis sample, well away from the reactivity panel's #440154 so the two families
+# are not confusable at a glance. `CLOUD_ALPHA` is shared with that panel.
+atp_cols <- c(
+  "ATP sensitive" = "#21918c",
+  "Other"         = "gray88"
+)
+
+plot_percent_insoluble_atp_sensitive <- function(x_label_in, y_label_in) {
+  info <- scatter_summary %>% filter(x_label == x_label_in, y_label == y_label_in)
+  stopifnot(nrow(info) == 1, info$kind == "state_vs_state")
+
+  fn_stem <- paste0(gsub("/", "_over_", x_label_in), " vs ",
+                    gsub("/", "_over_", y_label_in))
+  df <- read_csv(paste0(rev_scatter_dir, fn_stem, ".csv"), show_col_types = FALSE) %>%
+    mutate(atp_label = factor(atp_label, levels = names(atp_cols)))
+  stopifnot(
+    nrow(df) == info$n_joined,
+    !any(is.na(df$atp_label)),
+    sum(df$atp_sensitive) == info$n_atp_sensitive,
+    sum(df$atp_named) == info$n_atp_named,
+    # The two categories partition the table; if they ever stopped doing so the layer split
+    # below would quietly draw a protein twice or not at all.
+    sum(df$atp_sensitive) + sum(df$atp_label == "Other") == nrow(df),
+    # Every labelled protein is a coloured one, so a label never lands on a grey point.
+    all(df$atp_named <= df$atp_sensitive)
+  )
+
+  span <- range(c(df$percent_insoluble_x, df$percent_insoluble_y))
+  span <- span + c(-1, 1) * diff(span) * 0.06
+  at <- function(f) span[1] + diff(span) * f
+
+  sensitive <- df %>% filter(atp_sensitive)
+  named <- df %>% filter(atp_named)
+
+  # Annotations stack in the top-left corner, as on the reactivity panel and for the same
+  # reason: the highlighted points sit low on both axes. The count is wrapped onto two lines
+  # because at 2in wide a single line runs off the panel - the sibling panel above has the
+  # same string on one line and clips it.
+  annot <- tibble(
+    x = at(0.04),
+    y = c(at(0.96), at(0.89), at(0.82)),
+    hjust = 0,
+    label = c(paste0("R = ", sprintf("%.2f", info$pearson_r_percent)),
+              paste0(info$n_atp_sensitive, " of ", info$n_atp_source, " ATP-sensitive"),
+              "proteins detected")
+  )
+
+  set.seed(12345)
+  plt <- ggplot(df, aes(x = percent_insoluble_x, y = percent_insoluble_y,
+                        fill = atp_label)) +
+    geom_abline(slope = 1, intercept = 0, linewidth = LINE_WIDTH, colour = UNCHANGED_COL) +
+    # ATP-sensitive points are a member of this cloud, not a separate population - same
+    # size/shape/alpha as the rest, just a black outline instead of gray55.
+    geom_point(data = df %>% filter(atp_label == "Other"),
+               shape = 21, size = POINT_SIZE - 1.5, stroke = POINT_STROKE / 2,
+               colour = "gray55", alpha = CLOUD_ALPHA) +
+    geom_point(data = sensitive, shape = 21, size = POINT_SIZE - 1.5,
+               stroke = POINT_STROKE / 2, colour = "black", alpha = CLOUD_ALPHA) +
+    geom_text(data = annot, aes(x = x, y = y, label = label, hjust = hjust),
+              inherit.aes = FALSE, size = FONT_SIZE_MM, colour = "black") +
+    # Labelled points redrawn opaque for a visible anchor - fill unchanged, adds nothing new
+    # to the drawn-point audit.
+    geom_point(data = named, shape = 21, size = POINT_SIZE - 1.5,
+               stroke = POINT_STROKE / 2, colour = "black", alpha = 1) +
+    geom_text_repel(
+      data = named, aes(x = percent_insoluble_x, y = percent_insoluble_y, label = protein),
+      inherit.aes = FALSE, size = FONT_SIZE_MM, colour = "black",
+      box.padding = 0.4, min.segment.length = 0, segment.size = LINE_WIDTH,
+      max.overlaps = Inf, seed = 12345) +
+    scale_fill_manual(values = atp_cols, drop = FALSE, name = NULL) +
+    coord_cartesian(xlim = span, ylim = span) +
+    labs(
+      x = paste0("% insoluble, ", info$x_short),
+      y = paste0("% insoluble, ", info$y_short)
+    ) +
+    my_theme() +
+    theme(
+      aspect.ratio = 1,
+      legend.title = element_blank(),
+      legend.position = "top",
+      legend.key = element_blank(),
+      legend.margin = margin(l = -5, b = -5.5),
+      legend.box.margin = margin(l = -5, b = -0.8),
+      legend.key.spacing.x = unit(-0.05, "cm")
+    ) +
+    scale_x_continuous(breaks = seq(0, 100, 25)) +
+    scale_y_continuous(breaks = seq(0, 100, 25)) +
+    guides(fill = guide_legend(nrow = 1, override.aes = list(size = 1.6, alpha = 1)))
+
+  # Cloud split across layers 2-3; audit sums both since together they're every protein.
+  save_checked(plt, nrow(df),
+               scatter_figure_path("percent_insoluble_atp_sensitive", fn_stem),
+               width = 2, height = 2.2, layers = 2:3)
+}
+```
+
+```{r fig.width=2, fig.height=2.2}
+for (i in seq_len(nrow(state_pairs))) {
+  plot_percent_insoluble_atp_sensitive(state_pairs$x_label[i], state_pairs$y_label[i])
+}
+```
+
 ## Proteins of interest
 
 The manuscript's eight proteins: `PROTEINS_OF_INTEREST` plus PSMC5, one of the 19S regulatory

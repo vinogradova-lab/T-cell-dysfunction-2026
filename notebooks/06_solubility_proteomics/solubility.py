@@ -656,8 +656,100 @@ def reactivity_hover_detail(path=None):
     return detail
 
 
+# --------------------------------------------------------------------------------------
+# ATP-sensitive sites - the second cross-assay highlight
+# --------------------------------------------------------------------------------------
+# The sibling of the reactivity block above, asking a different question of the same panels:
+# whether a protein carrying a cysteine that ATP protects from labelling also moves between
+# the detergent fractions. Independent of `reactivity_change` - a site can be one, the other,
+# both or neither.
+
+# Written by notebooks/03_reactivity/reactivity_analysis.ipynb ("## ATP add back"). One row per
+# cysteine site. Resolved from this file rather than the working directory, as
+# REACTIVITY_CHANGES_CSV is, and gitignored for the same reason.
+ATP_ADD_BACK_CSV = (
+    Path(__file__).resolve().parents[2]
+    / "data/reactivity/atp_add_back/06_results/protein_table_ATP_add_back_2_reps.csv"
+)
+
+ATP_SENSITIVE_LABEL = "ATP sensitive"
+
+# The three states the add-back experiment ran, which happen to be this assay's states too.
+ATP_STATES = ["D2", "D8A", "D8C"]
+
+# A site is ATP sensitive when +ATP labelling is 2-fold lower than -ATP. Fold change only:
+# the add-back experiment calls regulation off the median ratio with no p-value, unlike the
+# rest of the project, and this reads its calls rather than re-deriving significance from two
+# donors. `< 0.5` is exactly the upstream `Lower` class, asserted below.
+ATP_RATIO_CUTOFF = 0.5
+
+# Text labels on the percent-insoluble ATP panel: the five members of
+# REACTIVITY_NAMED_PROTEINS that are themselves ATP sensitive. DNAJA3, NDUFA9 and VDAC1 are
+# not, so naming them here would put a label on a grey point.
+ATP_NAMED_PROTEINS = [
+    "MAP2K3",
+    "MAP2K4",
+    "LONP1",
+    "HSPA9",
+    "PSMC5",
+]
+
+
+def load_atp_sensitive_proteins(path=None):
+    """The proteins carrying an ATP-sensitive cysteine, unioned across D2/D8A/D8C.
+
+    Returns a sorted list of gene symbols. ATP sensitive means the +/- ATP median ratio is
+    below `ATP_RATIO_CUTOFF` - ATP protected the cysteine from labelling by 2-fold or more -
+    in at least one of `ATP_STATES`. The union is taken rather than a per-state set for the
+    reason `load_reactivity_changes` gives: a per-panel highlight would change the coloured
+    points from panel to panel, which is not the comparison being drawn.
+
+    The source table is one row per cysteine SITE and the solubility table one row per
+    protein, so the sites are rolled up to their gene symbols here. That rollup is forced by
+    the assay - solubility is a protein-level fraction ratio and has no cysteine to match a
+    site against - and it is the same rollup the reactivity highlight already does.
+
+    Joined on the gene symbol, not on `uniprot`, for the same isoform reason.
+    """
+    path = ATP_ADD_BACK_CSV if path is None else Path(path)
+    assert path.exists(), (
+        f"{path} not found - run notebooks/03_reactivity/reactivity_analysis.ipynb first "
+        "(everything under data/ is gitignored)"
+    )
+    df = pd.read_csv(path)
+
+    ratio_cols = {s: f"ratio_{s}_+/-_ATP" for s in ATP_STATES}
+    regulation_cols = {s: f"regulation_{s}_+/-_ATP" for s in ATP_STATES}
+    expected = {"protein", *ratio_cols.values(), *regulation_cols.values()}
+    missing = expected - set(df.columns)
+    assert not missing, f"{path} is missing {sorted(missing)}"
+
+    sensitive = pd.Series(False, index=df.index)
+    breakdown = []
+    for state in ATP_STATES:
+        state_mask = df[ratio_cols[state]] < ATP_RATIO_CUTOFF
+        # The cutoff is meant to reproduce the upstream call, not to reinterpret it. If notebook
+        # 03 ever moves off 2-fold this fires rather than silently drawing a different set.
+        assert state_mask.equals(df[regulation_cols[state]] == "Lower"), (
+            f"{path}: ratio < {ATP_RATIO_CUTOFF} at {state} disagrees with its "
+            f"{regulation_cols[state]} call"
+        )
+        sensitive |= state_mask
+        breakdown.append(
+            f"{state}={int(state_mask.sum())} sites/"
+            f"{df.loc[state_mask, 'protein'].nunique()} proteins"
+        )
+
+    proteins = sorted(df.loc[sensitive, "protein"].dropna().unique())
+    print(
+        f"{len(proteins)} proteins with an ATP-sensitive cysteine "
+        f"({int(sensitive.sum())} sites)   " + "  ".join(breakdown)
+    )
+    return proteins
+
+
 def run_scatter(long_df, x_comparison, y_comparison, kind, out_dir,
-                proteins_of_interest=None, reactivity_proteins=None):
+                proteins_of_interest=None, reactivity_proteins=None, atp_proteins=None):
     """Join two comparisons on protein and score their agreement.
 
     Returns (joined_df, summary). `concordance` is "Concordant" inside the 2-fold band and
@@ -670,6 +762,7 @@ def run_scatter(long_df, x_comparison, y_comparison, kind, out_dir,
     reactivity = (
         load_reactivity_changes() if reactivity_proteins is None else reactivity_proteins
     )
+    atp = load_atp_sensitive_proteins() if atp_proteins is None else atp_proteins
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -724,6 +817,18 @@ def run_scatter(long_df, x_comparison, y_comparison, kind, out_dir,
         # so the R layer draws these labels in black rather than the category colour.
         joined["reactivity_named"] = joined["protein"].isin(REACTIVITY_NAMED_PROTEINS)
 
+        # ATP-sensitive sites, the same flag + display-label pattern one block down. A
+        # separate highlight, not a refinement of the one above: the two sets overlap but
+        # neither contains the other.
+        joined["atp_sensitive"] = joined["protein"].isin(atp)
+        joined["atp_label"] = np.where(
+            joined["atp_sensitive"], ATP_SENSITIVE_LABEL, OTHER_LABEL
+        )
+
+        # Unlike `reactivity_named`, this one IS a subset of its category - every name is an
+        # ATP-sensitive protein - which the R layer asserts before drawing the labels.
+        joined["atp_named"] = joined["protein"].isin(ATP_NAMED_PROTEINS)
+
     summary = {
         "kind": kind,
         "x_label": x_label,
@@ -751,6 +856,11 @@ def run_scatter(long_df, x_comparison, y_comparison, kind, out_dir,
         # the R layer ever having to open the reactivity table.
         summary["n_reactivity_source"] = len(reactivity)
         summary["n_reactivity_named"] = int(joined["reactivity_named"].sum())
+        summary["n_atp_sensitive"] = int(joined["atp_sensitive"].sum())
+        # As `n_reactivity_source`: the size of the highlight set before this run's detection,
+        # so the panel can annotate "102 of 116 detected" without opening the add-back table.
+        summary["n_atp_source"] = len(atp)
+        summary["n_atp_named"] = int(joined["atp_named"].sum())
     assert (
         summary["n_concordant"] + summary["n_higher_on_x"] + summary["n_higher_on_y"]
         == summary["n_joined"]
@@ -762,7 +872,7 @@ def run_scatter(long_df, x_comparison, y_comparison, kind, out_dir,
 
 
 def run_scatters(long_df, out_dir, pairs=None, proteins_of_interest=None,
-                 reactivity_proteins=None):
+                 reactivity_proteins=None, atp_proteins=None):
     """Every scatterplot pair, plus the summary table the R layer reads."""
     pairs = SCATTER_PAIRS if pairs is None else pairs
     out_dir = Path(out_dir)
@@ -773,14 +883,20 @@ def run_scatters(long_df, out_dir, pairs=None, proteins_of_interest=None,
     reactivity = (
         load_reactivity_changes() if reactivity_proteins is None else reactivity_proteins
     )
+    atp = load_atp_sensitive_proteins() if atp_proteins is None else atp_proteins
 
     rows = []
+    # The state-vs-state frames are kept for `write_atp_sensitive_table`, which needs the
+    # percent and ATP columns only those pairs carry.
+    state_frames = []
     for x_comparison, y_comparison, kind in pairs:
         joined, summary = run_scatter(
             long_df, x_comparison, y_comparison, kind, out_dir, proteins_of_interest,
-            reactivity_proteins=reactivity,
+            reactivity_proteins=reactivity, atp_proteins=atp,
         )
         rows.append(summary)
+        if kind == "state_vs_state":
+            state_frames.append((joined, summary))
         print(
             f"{summary['x_label']:28s} vs {summary['y_label']:28s} "
             f"n={summary['n_joined']:5d}  r={summary['pearson_r']:5.2f}"
@@ -788,7 +904,68 @@ def run_scatters(long_df, out_dir, pairs=None, proteins_of_interest=None,
 
     summary_df = pd.DataFrame(rows)
     summary_df.to_csv(out_dir / "scatter_summary.csv", index=False)
+    write_atp_sensitive_table(state_frames, out_dir)
     return summary_df
+
+
+# The columns of the ATP panel's source table, in reading order: which panel, which protein,
+# where it sits on the two axes, and how it was called.
+ATP_TABLE_COLS = [
+    "x_short",
+    "y_short",
+    "x_label",
+    "y_label",
+    "uniprot",
+    "protein",
+    "description",
+    "percent_insoluble_x",
+    "percent_insoluble_y",
+    "percent_point_delta",
+    "atp_sensitive",
+    "atp_label",
+    "atp_named",
+]
+
+ATP_TABLE_CSV = "percent_insoluble_atp_sensitive.csv"
+
+
+def write_atp_sensitive_table(state_frames, out_dir):
+    """The percent-insoluble ATP panels' source table - one row per protein per panel.
+
+    Every number here is already in the per-pair scatter CSVs, among their two dozen columns
+    and under axis names that only `scatter_summary.csv` decodes. This is the same rows
+    narrowed to what the panel draws - both percentages and the ATP call - stacked across the
+    three panels with `x_short`/`y_short` naming the states, so one file answers "how insoluble
+    is this protein in each state, and is it ATP sensitive" without a join.
+
+    Takes the `(joined, summary)` pairs `run_scatters` collected, so the table cannot drift
+    from the panels; the grey cloud is kept rather than filtered to the ATP-sensitive rows,
+    since `atp_label` is what makes a row's category readable.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    table = pd.concat(
+        [
+            joined.assign(x_short=summary["x_short"], y_short=summary["y_short"])
+            # Sorted within a panel, not across: the panels stay in `SCATTER_PAIRS` order,
+            # and the highlighted proteins come first inside each one.
+            .sort_values(["atp_sensitive", "protein"], ascending=[False, True])[
+                ATP_TABLE_COLS
+            ]
+            for joined, summary in state_frames
+        ],
+        ignore_index=True,
+    )
+    assert len(table) == sum(len(joined) for joined, _ in state_frames)
+
+    path = out_dir / ATP_TABLE_CSV
+    table.to_csv(path, index=False)
+    print(
+        f"{path.name}   {len(state_frames)} panels, {len(table)} rows, "
+        f"{int(table['atp_sensitive'].sum())} ATP sensitive"
+    )
+    return table
 
 
 # --------------------------------------------------------------------------------------
@@ -799,7 +976,7 @@ def run_scatters(long_df, out_dir, pairs=None, proteins_of_interest=None,
 # figures - the SVG/PNG panels remain the output of record. Follows bin/analysis_utils.py:
 # plotly express, `template="plotly_white"`, plotly.js from the CDN.
 
-# The UniProt FUNCTION cache `write_percent_insoluble_excel` leaves behind - read directly,
+# The UniProt FUNCTION cache `write_fraction_percent_excel` leaves behind - read directly,
 # not via `uniprot_functions()`, which re-queries the whole set if one accession is missing.
 UNIPROT_FUNCTIONS_CSV = "uniprot_functions.csv"
 
@@ -998,7 +1175,8 @@ def write_reactivity_html(joined, out_dir, functions=None, reactivity_detail=Non
     return path
 
 
-def run_reactivity_html(long_df, scatter_dir, functions_csv=None, reactivity_proteins=None):
+def run_reactivity_html(long_df, scatter_dir, functions_csv=None, reactivity_proteins=None,
+                        atp_proteins=None):
     """The three interactive percent-insoluble reactivity panels.
 
     Written into the same `figures/percent_insoluble_reactivity/` folder as the static panels,
@@ -1012,13 +1190,16 @@ def run_reactivity_html(long_df, scatter_dir, functions_csv=None, reactivity_pro
         else Path(functions_csv)
     )
     assert functions_csv.exists(), (
-        f"{functions_csv} not found - run write_percent_insoluble_excel first, which builds it"
+        f"{functions_csv} not found - run write_fraction_percent_excel first, which builds it"
     )
     functions = pd.read_csv(functions_csv, keep_default_na=False)
     detail = reactivity_hover_detail()
     reactivity = (
         load_reactivity_changes() if reactivity_proteins is None else reactivity_proteins
     )
+    # Loaded once for the same reason `run_scatters` does: `run_scatter` writes the ATP columns
+    # too, and re-reading the site table per pair buys nothing.
+    atp = load_atp_sensitive_proteins() if atp_proteins is None else atp_proteins
 
     paths = []
     for x_comparison, y_comparison, kind in SCATTER_PAIRS:
@@ -1026,7 +1207,7 @@ def run_reactivity_html(long_df, scatter_dir, functions_csv=None, reactivity_pro
             continue
         joined, _ = run_scatter(
             long_df, x_comparison, y_comparison, kind, scatter_dir,
-            reactivity_proteins=reactivity,
+            reactivity_proteins=reactivity, atp_proteins=atp,
         )
         annotated = joined["uniprot"].isin(
             functions.loc[functions["uniprot_function"] != "", "uniprot"]
@@ -1377,18 +1558,21 @@ def uniprot_functions(df, cache_csv=None):
     return functions
 
 
-# The Data S2 sheet this table ships as. `S2_6_TITLE` becomes row 1 of the sheet and the
-# `contents` entry; `S2_6_DESCRIPTION` becomes row 2. Both are placeholder wording - edit
-# them here and nowhere else.
-S2_6_SHEET = "S2-6 Detergent solubility"
+# The Data S2 sheet this table ships as, in the three slots every other sheet uses:
+# `S2_6_SHEET` is the tab name and the `contents` title column, `S2_6_TITLE` is row 1 of
+# the sheet and - minus its `S2-6 ` prefix - the `contents` description column, and
+# `S2_6_DESCRIPTION` is row 2, the methods sentence. Edit here and nowhere else.
+S2_6_SHEET = "S2-6 Solubility proteomics"
 S2_6_TITLE = (
-    "S2-6 Detergent solubility proteomics (TMT-exp) of activated, acutely, and "
-    "chronically stimulated human T cells"
+    "S2-6 Unenriched proteomics data from the soluble and insoluble fractions of "
+    "activated, acutely, and chronically stimulated T cells "
+    "(related to Extended Data Fig. 4)"
 )
 S2_6_DESCRIPTION = (
-    "Percent of each protein recovered in the detergent-insoluble fraction, per replicate "
-    "channel, with the median per cell state. Shares are relative: equal protein mass was "
-    "labelled from each fraction, so compare across states rather than against 50."
+    "Unenriched proteomics of the soluble and insoluble fractions of activated T cells and "
+    "T cells cultured for 8 days with or without chronic stimulation. Data are normalized "
+    "such that the averages of the soluble percentage and insoluble percentage sum to "
+    "100%. Data are from n = 2 donors."
 )
 
 # Front columns, in the order the S2-8..S2-11 low-input sheets use - `protein` first, not
@@ -1396,57 +1580,113 @@ S2_6_DESCRIPTION = (
 SUPP_FRONT_COLS = ["protein", "uniprot", "description", "uniprot_function"]
 
 
-def percent_insoluble_table(shares, cfg=REVISION, cache_csv=None):
-    """Percent insoluble per replicate channel, plus the median per cell state.
+# The two highlight sets as the percent-insoluble scatter panels see them. Asserted rather
+# than merely reported, so the sheet cannot quietly disagree with the figures it accompanies
+# if notebook 03 is re-run against different thresholds.
+N_REACTIVITY_CHANGE = 136
+N_ATP_SENSITIVE = 102
+
+
+def fraction_percent_table(
+    shares,
+    cfg=REVISION,
+    cache_csv=None,
+    reactivity_proteins=None,
+    atp_proteins=None,
+):
+    """Percent soluble and insoluble per replicate channel, plus the median per group.
 
     `shares` is what `fraction_shares` returns, so the percent itself is never recomputed
-    here - this only selects the insoluble half, widens it and adds the medians.
+    here - this only widens it, adds the medians and joins the two cross-assay flags.
 
-    Replicate columns are `<state>_<replicate>` (`D2_d1_1`, ...), matching the
-    `<condition>_<donor>_<duplicate>` naming of the low-input sheets alongside it in Data S2.
+    Replicate columns are `<state>-<fraction>_<replicate>` (`D2-Soluble_d1_1`, ...), the
+    `group` name the rest of the assay uses. A channel's two fractions sum to 100 by
+    construction, so the soluble columns carry nothing the insoluble ones do not - they are
+    here so the sheet says what the percent is a percent OF, which the former
+    `<state>_<replicate>` naming left to the caption.
+
+    `reactivity_change` and `atp_sensitive` are the per-protein calls the scatter panels
+    colour by, unioned across conditions by their loaders and joined on the gene symbol
+    rather than `uniprot` for the isoform reason `load_reactivity_changes` gives. Both
+    default to reading their own source table, so this sheet now needs notebook 03 to have
+    been run - previously true only of the scatter panels.
 
     CAVEAT: equal protein MASS was labelled per fraction and the revision run has no Final
     dilution factor, so a share is a relative position, not "X% of the protein is insoluble".
     """
-    insoluble = drop_contaminants(shares[shares["fraction"] == "Insoluble"]).copy()
+    reactivity = (
+        load_reactivity_changes() if reactivity_proteins is None else reactivity_proteins
+    )
+    atp = load_atp_sensitive_proteins() if atp_proteins is None else atp_proteins
+
+    percents = drop_contaminants(shares).copy()
 
     # Pivot on `uniprot` alone: it is one row per protein here, and a multi-column index
     # would make pandas build the cartesian product of all three id columns.
-    ids = insoluble[ID_COLS].drop_duplicates(subset="uniprot").set_index("uniprot")
+    ids = percents[ID_COLS].drop_duplicates(subset="uniprot").set_index("uniprot")
 
-    insoluble["channel"] = insoluble["state"] + "_" + insoluble["replicate"]
-    replicate_cols = [f"{state}_{rep}" for state in STATES for rep in cfg.replicates]
-    wide = insoluble.pivot(index="uniprot", columns="channel", values="percent").reindex(
+    percents["channel"] = percents["group"] + "_" + percents["replicate"]
+    groups = [f"{state}-{fraction}" for state in STATES for fraction in FRACTIONS]
+    replicate_cols = [f"{group}_{rep}" for group in groups for rep in cfg.replicates]
+    wide = percents.pivot(index="uniprot", columns="channel", values="percent").reindex(
         columns=replicate_cols
     )
 
     medians = (
-        insoluble.groupby(["uniprot", "state"])["percent"]
+        percents.groupby(["uniprot", "group"])["percent"]
         .median()
-        .unstack("state")
-        .reindex(columns=STATES)
-        .rename(columns={state: f"{state} median" for state in STATES})
+        .unstack("group")
+        .reindex(columns=groups)
+        .rename(columns={group: f"{group} median" for group in groups})
     )
 
     table = ids.join(wide).join(medians).reset_index()
 
     functions = uniprot_functions(table, cache_csv=cache_csv)
     table = table.merge(functions, on="uniprot", how="left")
+    table["reactivity_change"] = table["protein"].isin(reactivity)
+    table["atp_sensitive"] = table["protein"].isin(atp)
     table = table[SUPP_FRONT_COLS + [c for c in table.columns if c not in SUPP_FRONT_COLS]]
 
-    # Each median must sit inside its own state's replicate range; a median landing outside
-    # would mean the two pivots disagreed about which channels belong to which state.
-    for state in STATES:
-        reps = table[[f"{state}_{rep}" for rep in cfg.replicates]]
-        median = table[f"{state} median"]
+    # Each median must sit inside its own group's replicate range; a median landing outside
+    # would mean the two pivots disagreed about which channels belong to which group.
+    for group in groups:
+        reps = table[[f"{group}_{rep}" for rep in cfg.replicates]]
+        median = table[f"{group} median"]
         within = (median >= reps.min(axis=1) - 1e-9) & (median <= reps.max(axis=1) + 1e-9)
-        assert within[median.notna()].all(), f"{state} median outside its replicate range"
+        assert within[median.notna()].all(), f"{group} median outside its replicate range"
+
+    # A channel's two fractions must still total 100 after the pivot. Widening from one
+    # fraction to two can only go wrong silently by landing a fraction in the wrong column,
+    # and that is what this catches.
+    for state in STATES:
+        for rep in cfg.replicates:
+            total = table[f"{state}-Soluble_{rep}"] + table[f"{state}-Insoluble_{rep}"]
+            assert np.allclose(total.dropna(), 100), f"{state}_{rep} does not total 100"
+
+    n_reactivity = int(table["reactivity_change"].sum())
+    n_atp = int(table["atp_sensitive"].sum())
+    assert n_reactivity == N_REACTIVITY_CHANGE, (
+        f"{n_reactivity} proteins flagged reactivity_change, expected "
+        f"{N_REACTIVITY_CHANGE} - the sheet and the scatter panels disagree"
+    )
+    assert n_atp == N_ATP_SENSITIVE, (
+        f"{n_atp} proteins flagged atp_sensitive, expected {N_ATP_SENSITIVE} - the sheet "
+        "and the scatter panels disagree"
+    )
 
     return table
 
 
-def write_percent_insoluble_excel(shares, out_path, cfg=REVISION, cache_csv=None):
-    """Write the Data S2-6 sheet: percent insoluble per channel and per-state medians.
+def write_fraction_percent_excel(
+    shares,
+    out_path,
+    cfg=REVISION,
+    cache_csv=None,
+    reactivity_proteins=None,
+    atp_proteins=None,
+):
+    """Write the Data S2-6 sheet: percent per fraction channel, medians and the two flags.
 
     One sheet, styled as in low_input.write_percent_control_to_excel. Contaminant and
     keratin rows are dropped, and every row carries the UniProt FUNCTION comment.
@@ -1454,7 +1694,13 @@ def write_percent_insoluble_excel(shares, out_path, cfg=REVISION, cache_csv=None
     import polars as pl
     import xlsxwriter
 
-    table = percent_insoluble_table(shares, cfg=cfg, cache_csv=cache_csv)
+    table = fraction_percent_table(
+        shares,
+        cfg=cfg,
+        cache_csv=cache_csv,
+        reactivity_proteins=reactivity_proteins,
+        atp_proteins=atp_proteins,
+    )
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

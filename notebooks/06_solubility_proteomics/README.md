@@ -277,6 +277,49 @@ OR 1.52, p = 0.019). It does not survive the move to a 2-fold band (OR 1.22, p =
 what one would expect of an effect carried by the proteins sitting nearest the band edge. The
 1.5-fold number should not be quoted.
 
+**A version coloured by ATP sensitivity.** `percent_insoluble_atp_sensitive/` holds the same
+three panels again, coloured by the sibling cross-assay property: whether the protein carries a
+cysteine that ATP protects from labelling in the add-back experiment (`## ATP add back` in
+`notebooks/03_reactivity`). Where the panel above asks whether a cysteine that changed between
+cell states also moved between fractions, this one asks the same of a cysteine that responds to
+ATP. The two highlight sets overlap without either containing the other.
+
+The set is read by `load_atp_sensitive_proteins` from
+`data/reactivity/atp_add_back/06_results/protein_table_ATP_add_back_2_reps.csv`, so **notebook 03
+must have been run first** here too. ATP sensitive means the `+/- ATP` median ratio is **below
+0.5** - 2-fold lower labelling with ATP present - in at least one state; that is exactly the
+add-back experiment's own `Lower` class, and the loader asserts the two agree rather than
+re-deriving the call. Note that experiment classifies on fold change alone with **no p-value**,
+unlike the `p < 0.05 & |log2FC| > log2(1.5)` convention used everywhere else in this project.
+
+The set is the **union across D2/D8A/D8C**: 143 cysteine sites in 116 proteins, 102 of them
+detected in the 4823-protein table (D2 28 sites/26 proteins, D8A 89/73, D8C 117/98). Unioned for
+the reason given above, and joined on the gene symbol for the reason given above. One difference
+from the reactivity set is worth recording: the source table is one row per **cysteine site**
+and this one is per protein, so sites are rolled up to their gene symbol and a protein is
+coloured if *any* of its cysteines is ATP sensitive. That rollup is forced - solubility is a
+protein-level fraction ratio with no cysteine of its own to match against. The three states are
+at least this assay's own three, unlike the reactivity set's D4/D8 mix.
+
+Counts land in `scatter_summary.csv` as `n_atp_sensitive`, `n_atp_source` and `n_atp_named`,
+and the panel's own numbers in `scatterplots/percent_insoluble_atp_sensitive.csv` - one row
+per protein per panel written by `write_atp_sensitive_table`, carrying the two percentages,
+the percentage-point shift and the `atp_sensitive`/`atp_label`/`atp_named` calls. Nothing in
+it is new: it is the per-pair scatter CSVs narrowed to the columns the panel draws and
+stacked across the three, with `x_short`/`y_short` naming the states so the axes read
+without `scatter_summary.csv` beside them. The grey cloud is kept, so the file is the panel
+rather than its highlight - filter on `atp_sensitive` for the 102.
+
+Labels come from `atp_named`: `ATP_NAMED_PROTEINS` in `solubility.py` - MAP2K3, MAP2K4, LONP1,
+HSPA9, PSMC5, the five of the eight above that are themselves ATP sensitive (DNAJA3, NDUFA9 and
+VDAC1 are not, and naming them would put a label on a grey point). Unlike `reactivity_named`
+this **is** a subset of the coloured category, which the Rmd asserts before drawing; the labels
+stay black anyway, to match the sibling panel and because black reads better than the fill at
+this size. The swarm takes a second categorical viridis sample, `#21918c`, well away from the
+reactivity panel's `#440154` so the two families are not confusable at a glance.
+
+No `notes.txt` and no interactive companion for this family - figures only.
+
 **An interactive companion.** A 3-inch panel can name eight of its 4823 points, which leaves
 128 of the 136 reactivity-change proteins as anonymous dots. `run_reactivity_html` writes a plotly
 version of the same three panels into the same folder - one `.html` beside each `.svg`/`.png`,
@@ -400,45 +443,133 @@ Written to `data/solubility/revision/` (untracked):
 - `03_results/barplots/percent_agreement.csv` - the barplot-vs-scatter percent reconciliation
 - `03_results/barplots/fraction_shares.csv` and one `fraction_shares_<panel>.csv` per entry of
   `BARPLOT_PROTEIN_SETS`
+- `03_results/scatterplots/percent_insoluble_atp_sensitive.csv` - the ATP panels' source
+  table, three panels x 4823 proteins
 
 `scatterplots/figures/` holds one folder per kind of panel - `percent_insoluble/` for the
-percent version of the state-vs-state family and `percent_insoluble_reactivity/` for the
-version coloured by cysteine reactivity change - so each carries one comparable set of three.
-The file name is the same in each, since the folder says which panel it is.
+percent version of the state-vs-state family, `percent_insoluble_reactivity/` for the version
+coloured by cysteine reactivity change and `percent_insoluble_atp_sensitive/` for the version
+coloured by ATP sensitivity - so each carries one comparable set of three. The file name is the
+same in each, since the folder says which panel it is.
 
 `percent_insoluble_reactivity/` carries a `notes.txt` written from the Rmd alongside the
 figures, holding the reading above so it survives `data/` being untracked, plus three `.html`
 files, the interactive companions written by `run_reactivity_html` from the Python layer.
 
-## Supplementary table: Data S2-6
+## Supplementary table: Supplementary Table 2, sheet S2-6
 
-The assay's supplementary table is a **single sheet of `Data S2`**, `S2-6`, written by
-`write_percent_insoluble_excel` to `supp_data/Data S2-6_solubility.xlsx`. It replaces the
+The assay's supplementary table is a **single sheet of `Supplementary Table 2`**, `S2-6`,
+written by `write_fraction_percent_excel` to
+`supp_data/Supplementary_Table_2-6_solubility.xlsx`. It replaces the
 former `Data S4` / `Data S4b` workbooks, which carried the channel ratio matrix and all nine
 comparisons; the sheet now reports only what the figures read.
 
-One row per protein, 4822 x 19: `protein`, `uniprot`, `description`, `uniprot_function`, then
-the twelve `<state>_<donor>_<duplicate>` percent-insoluble channels (`D2_d1_1` ... `D8C_d2_2`)
-and `D2 median` / `D8A median` / `D8C median`. The channel naming matches the low-input sheets
-either side of it in `Data S2`.
+One row per protein, 4822 x 36: `protein`, `uniprot`, `description`, `uniprot_function`, then
+the twenty-four `<state>-<fraction>_<donor>_<duplicate>` percent channels
+(`D2-Soluble_d1_1` ... `D8C-Insoluble_d2_2`), the six `<state>-<fraction> median` columns, and
+the two flags `reactivity_change` / `atp_sensitive`. The channel name is the `group` the rest
+of the assay uses plus the replicate - it does **not** match the `<condition>_<donor>_<duplicate>`
+naming of the low-input sheets either side of it, because those have no fraction to name.
+
+**A channel's two fractions sum to 100 by construction**, so the twelve soluble columns are
+exactly `100 -` their insoluble partners and carry no information the insoluble ones do not.
+They are here so the sheet says what the percent is a percent *of*, which the former
+`<state>_<replicate>` naming left to the caption. `fraction_percent_table` asserts the sum
+still holds after the pivot - landing a fraction in the wrong column is the one way the
+widening could go wrong silently.
+
+`reactivity_change` (136 of 4822) and `atp_sensitive` (102) are the per-protein calls the two
+coloured scatter families draw, so the table highlights what the figures highlight. Both come
+from `load_reactivity_changes` / `load_atp_sensitive_proteins`, unioned across conditions and
+joined on the gene symbol, and the counts are asserted against `N_REACTIVITY_CHANGE` /
+`N_ATP_SENSITIVE` rather than merely reported. 14 proteins carry both. **This makes the sheet
+depend on notebook 03 having been run**, which was previously true only of the scatter panels.
 
 The percent is taken straight from `fraction_shares` rather than recomputed, so the sheet, the
 barplots and the percent-insoluble scatterplots are one quantity on one scale. Medians are over
-the four channels of a state; 336 of the 57864 channels are missing where converting a TMT zero
-to `NaN` left no value (268 proteins, no state left without a median). Contaminant and keratin
-rows are dropped as in `low_input.write_percent_control_to_excel`, leaving 4822 of 4823, and
-4590 of those carry a UniProt FUNCTION comment, read from the `uniprot_functions.csv` cache.
+the four channels of a group; 672 of the 115728 channels are missing where converting a TMT zero
+to `NaN` left no value (268 proteins, no group left without a median - a NaN in either raw value
+makes both of a channel's percents NaN, so this is twice the count of the insoluble-only sheet
+over the same proteins). Contaminant and keratin rows are dropped as in
+`low_input.write_percent_control_to_excel`, leaving 4822 of 4823, and 4590 of those carry a
+UniProt FUNCTION comment, read from the `uniprot_functions.csv` cache.
 
 **The relative-share caveat applies to the sheet as it does to the barplot**: equal protein
 mass was labelled from each fraction and this run has no Final dilution factor, so "10%
-insoluble" is a relative position, not a literal tenth. The sheet's description row says so.
+insoluble" is a relative position, not a literal tenth. The sheet's description row states the
+normalization - that the two percentages sum to 100 - but not this consequence of it, so the
+caveat lives here and in the barplot section rather than in the workbook.
 
-`S2_6_SHEET`, `S2_6_TITLE` and `S2_6_DESCRIPTION` in `solubility.py` hold the tab name and the
-sheet's row-1/row-2 text; they are placeholder wording pending the manuscript's own.
+`S2_6_SHEET`, `S2_6_TITLE` and `S2_6_DESCRIPTION` in `solubility.py` hold the three strings,
+in the slots the previous submission already uses: `S2_6_SHEET` (`S2-6 Solubility proteomics`) is
+the tab name and the `contents` title column, `S2_6_TITLE` is the sheet's row 1 and - minus its
+`S2-6 ` prefix - the `contents` description column, and `S2_6_DESCRIPTION` is row 2, the methods
+sentence ending `Data are from n = 2 donors.` as its neighbours do. The figure reference
+(`related to Extended Data Fig. 4`) sits in `S2_6_TITLE`, on row 1, which is where every other
+sheet carries it.
 
-Inserting this sheet at position 6 shifts the rest of `Data S2` up by one - the former `S2-6
-ATP add-back` becomes `S2-7`, and the four low-input sheets become `S2-8` through `S2-11`. The
-renumbered workbook is assembled by `bin/renumber_data_s2.py`.
+Inserting this sheet at position 6 shifts the rest of the workbook up by one - the four
+low-input sheets, formerly `S2-6` through `S2-9`, become `S2-7` through `S2-10`. The renumbered
+workbook is assembled by `bin/renumber_data_s2.py`, which writes
+`supp_data/Supplementary_Table_2.xlsx`.
+
+**Its source is the previous submission, `supp_data/Data S2_20260528.xlsx`.** That matters:
+Dropbox also holds `Data S2_EV2.xlsx`, a divergent version with an extra
+`S2-2 PCA pathway enrichment` sheet and the low-input sheets in the other order. Neither
+feature matches the manuscript, so building from it produced a workbook whose numbering the
+text did not cite. Building from the previous submission instead - ten sheets after the
+insertion, in its order - lands every sheet on the number the manuscript already uses:
+
+| workbook | manuscript callout |
+|---|---|
+| S2-1 Unenriched proteomics | `Data S2-1 and S2-2`, the proteomics/RNA-seq pair |
+| S2-2 Bulk RNA vs WP | the same pair |
+| S2-3 Reactivity changes | `Data S2-3, S2-4` |
+| S2-4 Cysteine reactivity vs WP | the same pair |
+| S2-5 ATP add-back | `Fig. 2d; Data S2-5` |
+| **S2-6 Solubility** | `Extended Data Fig. 4a and Data S2-6` |
+| S2-7 Low-input WP, mouse | `Fig. 4a and Extended Data Fig. 7a; Data S2-7` |
+| S2-8 Low-input WP, TILs | `Fig. 4b and Extended Data Fig. 7b; Data S2-8` |
+| S2-9 Low-input RC, inhibitors | `Fig. 5d; Data S2-9, S2-10` |
+| S2-10 Low-input WP, inhibitors | the same callout |
+
+The numbering is the previous submission's own; inserting one sheet is the only change the
+script makes to the sequence.
+
+**That script also rewrites every figure citation.** The source workbook is not merely in
+Cell Press style; its numbers track an older draft with seven main figures, and none of the
+figures it names still mean what they did in the current manuscript. So the nine strings in
+`NATURE_CITATIONS` are written out per sheet, re-derived from
+`Manuscript_Main_NI_20260904_clean_yellow.docx` - five main figures, eight Extended Data
+figures - rather than converted from what the workbook holds. Nature style follows from that:
+`Fig.`/`Figs.`, and supplementary figures as `Extended Data Fig. <n>`. `verify` asserts no
+`Figure` or `S<n>` survives inside any citation clause. Tab names keep their `S2-<n>` form:
+Excel caps a tab name at 31 characters, which a spelled-out `Supplementary Table 2-<n> ...`
+would exceed.
+
+Each citation is the manuscript's own `Data S2-<n>` callout plus the panels that unambiguously
+plot that dataset:
+
+| sheet | citation | where the manuscript says so |
+|---|---|---|
+| S2-1 Unenriched proteomics | Fig. 1 and Extended Data Figs. 2, 6 | `(Extended Data Fig. 2c; Data S2-1 and S2-2)`; PCA at ED 2d, markers at ED 2e,f; the green triangles in Fig. 1j; ED 6f, 6l as "proteomic data showed" |
+| S2-2 Bulk RNA vs WP | Extended Data Fig. 2 | the RNA-vs-protein comparison is ED 2e,f |
+| S2-3 Reactivity changes | Figs. 1, 2 and Extended Data Fig. 2 | `(Data S2-3, S2-4)` at Fig. 1g; counted in Fig. 1i, MAP2K3/4 at Fig. 1j and ED 2g; the Fig. 2g Venn |
+| S2-4 Cysteine reactivity vs WP | Fig. 1 and Extended Data Fig. 2 | the "matching unenriched proteomics data" of the same `(Data S2-3, S2-4)` callout |
+| S2-5 ATP add-back | Figs. 2, 3 and Extended Data Figs. 3, 5 | `(Fig. 2d; Data S2-5)`; ED 3b-i; the GCN1 boxplot at Fig. 3a with ED 5a |
+| **S2-6 Solubility** | Extended Data Fig. 4 | `(Extended Data Fig. 4a and Data S2-6)` |
+| S2-7 Low-input WP, mouse | Fig. 4 and Extended Data Fig. 7 | `(Fig. 4a and Extended Data Fig. 7a; Data S2-7)` |
+| S2-8 Low-input WP, TILs | Fig. 4 and Extended Data Fig. 7 | `(Fig. 4b and Extended Data Fig. 7b; Data S2-8)` |
+| S2-9 Low-input RC, inhibitors | Fig. 5 and Extended Data Fig. 8 | `(Fig. 5d; Data S2-9, S2-10)`, Fig. 5e, ED 8b |
+| S2-10 Low-input WP, inhibitors | Fig. 5 and Extended Data Fig. 8 | the same callout, Fig. 5f, ED 8c-e |
+
+The ED 6 half of the S2-1 entry is the one inference rather than a callout: the text attributes
+ED 6f and 6l to "proteomic data" without naming the sheet.
+
+**One thing this does not fix.** The manuscript writes `Data S2-6`, not
+`Supplementary Table 2-6`, and contains no occurrence of the word "supplementary" at all; if
+the workbook keeps its `Supplementary Table 2` name the callouts have to follow. The numbers
+match either way - only the label differs.
 
 ## Code
 
