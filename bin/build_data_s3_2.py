@@ -37,9 +37,7 @@ S3_2_DESCRIPTION = (
     "for 8 days with (D8C) or without (D8A) chronic stimulation. Each ratio is normalized to "
     "its D2 value within a donor, so every D2 value is 1 by construction. P-values are from "
     "a Friedman test with Dunn's multiple comparisons test (adjusted p-values), computed in "
-    "GraphPad Prism 10. Friedman is a repeated-measures test, so a donor missing any one "
-    "condition is excluded from that ratio entirely and is not listed: GTP:GDP is from n = 3 "
-    "donors, every other ratio from n = 4."
+    "GraphPad Prism 10.3.0. GTP:GDP is from n = 3 donors, every other ratio from n = 4."
 )
 
 
